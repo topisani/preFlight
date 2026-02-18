@@ -221,7 +221,8 @@ void LoadStepDialog::add_params(wxSizer *sizer)
     m_linear_precision_val->SetToolTip(tooltip(m_linear_precision_sl));
 
     m_linear_precision_val->Bind(wxEVT_TEXT_ENTER,
-                                 [process_value_change, this](wxCommandEvent &e) {
+                                 [process_value_change, this](wxCommandEvent &e)
+                                 {
                                      process_value_change(m_params.linear, m_linear_precision_val,
                                                           m_linear_precision_slider, m_linear_precision_sl);
                                  });
@@ -258,7 +259,8 @@ void LoadStepDialog::add_params(wxSizer *sizer)
     m_angle_precision_val->SetToolTip(tooltip(m_angle_precision_sl));
 
     m_angle_precision_val->Bind(wxEVT_TEXT_ENTER,
-                                [process_value_change, this](wxCommandEvent &e) {
+                                [process_value_change, this](wxCommandEvent &e)
+                                {
                                     process_value_change(m_params.angle, m_angle_precision_val,
                                                          m_angle_precision_slider, m_angle_precision_sl);
                                 });

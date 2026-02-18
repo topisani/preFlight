@@ -1,5 +1,50 @@
 # preFlight Changelog
 
+## v0.9.5
+
+### Print Host Improvements
+- Fixed host upload crash when sending large files to printer
+- Added file overwrite protection - checks if the file already exists on the printer before uploading and prompts to overwrite or rename (Duet DSF/RRF, OctoPrint, LocalLink, Moonraker)
+- Added post-upload prompt to switch to the Printer WebView tab (with "Remember my choice" option)
+- Changed Duet connection order to try DSF before RRF - SBC-based printers no longer waste a failed RRF request on every connection
+
+### Orca Import Improvements
+- Resolved most `@System` filament inheritance - imported profiles now get correct values instead of falling back to defaults
+- Added "Yes to All / No to All" buttons to overwrite and validation dialogs so large imports don't require clicking through every duplicate
+- Auto-appended `[0]` index to vector variables during G-code placeholder translation to prevent post-import parsing errors
+- Hardened import pipeline: per-profile error handling so one failure doesn't abort the batch, always show results dialog, reject empty/corrupt bundles with a clear message
+- Added 27 new key mappings (acceleration, overhang speeds, bridge flow, line widths, infill anchors, resolution, wall distribution, and more) and registered 53 additional Orca-only keys so they are properly classified instead of falling through as unknown
+
+### Preview/Legend Improvements
+- Replaced linear color range with frequency-aware band system for the preview legend - outliers no longer compress useful data into a single color; bands are based on quantile splitting of actual value frequencies
+- Enabled preview layer ruler by default
+
+### Cooling
+- Made "Enable manual fan speeds" and "Enable auto cooling" mutually exclusive to prevent auto cooling from overriding manual fan settings
+- Updated cooling hint text to guide users toward manual controls
+
+### Bug Fixes
+- Fixed placeholder parsing inside G-code comments - variables after `;` no longer trigger parse errors
+- Restored sidebar and allow reslice after a slicing error
+- Fixed Stealth Mode column persisting in Machine Limits when toggled from sidebar
+- Fixed stale lock icons when parent preset was temporarily null during load
+- Fixed thin-walled geometry collapse in mesh slicer closing operation
+- Fixed division by zero crash in rectilinear fill segment intersection
+- Fixed interlocking perimeters missing on combined-infill void layers
+- Fixed over-bridge speed having no effect on solid infill above bridges
+- Fixed SSL certificate revocation check unavailable on Linux/macOS
+
+### UI/Theme Improvements
+- Replaced native scrollbars with custom themed scrollbars in all message dialogs for consistent dark mode appearance
+- Improved text fields: tooltips dismiss upon typing and added right-click context menu (Undo/Cut/Copy/Paste/Delete)
+- Settings description text now wraps dynamically to available panel width
+- Eliminated expensive full-app rescale when dragging window between monitors - removes visible lag on multi-monitor setups
+- Replaced fuzzy search in the settings search dialog with contiguous substring match for more predictable results
+- Mouse wheel scrolling in multiline text areas now requires clicking inside the field first to prevent accidental changes
+
+### Linux
+- Fixed OCCTWrapper.so not found for STEP file import
+
 ## v0.9.4
 
 ### New Features

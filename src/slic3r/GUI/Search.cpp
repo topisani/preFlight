@@ -218,22 +218,33 @@ bool OptionsSearcher::search()
     return search(search_line, true);
 }
 
-static bool fuzzy_match(const std::wstring &search_pattern, const std::wstring &label, int &out_score,
-                        std::vector<uint16_t> &out_matches)
+// preFlight: Case-insensitive contiguous substring match (replaces fuzzy_match).
+// Returns consecutive match positions for mark_string() highlighting.
+static bool substring_match(const std::wstring &pattern, const std::wstring &str, int &out_score,
+                            std::vector<uint16_t> &out_matches)
 {
-    uint16_t matches[fts::max_matches + 1]; // +1 for the stopper
-    int score;
-    if (fts::fuzzy_match(search_pattern.c_str(), label.c_str(), score, matches))
-    {
-        size_t cnt = 0;
-        for (; matches[cnt] != fts::stopper; ++cnt)
-            ;
-        out_matches.assign(matches, matches + cnt);
-        out_score = score;
-        return true;
-    }
-    else
+    if (pattern.empty())
         return false;
+
+    auto it = std::search(str.begin(), str.end(), pattern.begin(), pattern.end(),
+                          [](wchar_t a, wchar_t b) { return std::towlower(a) == std::towlower(b); });
+    if (it == str.end())
+        return false;
+
+    size_t pos = std::distance(str.begin(), it);
+    out_matches.clear();
+    for (size_t i = 0; i < pattern.size(); ++i)
+        out_matches.push_back(static_cast<uint16_t>(pos + i));
+
+    // Score: higher is better. Base 200 ensures all substring matches pass the >90 threshold.
+    out_score = 200;
+    if (pos == 0)
+        out_score += 100; // match at start of string
+    else if (wchar_t prev = str[pos - 1]; prev == ' ' || prev == '_' || prev == ':' || prev == '/')
+        out_score += 50;                                        // match at word boundary
+    out_score -= static_cast<int>(str.size() - pattern.size()); // prefer shorter/more specific results
+
+    return true;
 }
 
 bool OptionsSearcher::search(const std::string &search, bool force /* = false*/)
@@ -305,8 +316,8 @@ bool OptionsSearcher::search(const std::string &search, bool force /* = false*/)
         int score = std::numeric_limits<int>::min();
         int score2;
         matches.clear();
-        fuzzy_match(wsearch, label, score, matches);
-        if (fuzzy_match(wsearch, opt.key, score2, matches2) && score2 > score)
+        substring_match(wsearch, label, score, matches);
+        if (substring_match(wsearch, opt.key, score2, matches2) && score2 > score)
         {
             for (fts::pos_type &pos : matches2)
                 pos += label.size() + 1;
@@ -314,7 +325,7 @@ bool OptionsSearcher::search(const std::string &search, bool force /* = false*/)
             append(matches, matches2);
             score = score2;
         }
-        if (view_params.english && fuzzy_match(wsearch, label_english, score2, matches2) && score2 > score)
+        if (view_params.english && substring_match(wsearch, label_english, score2, matches2) && score2 > score)
         {
             label = std::move(label_english);
             matches = std::move(matches2);

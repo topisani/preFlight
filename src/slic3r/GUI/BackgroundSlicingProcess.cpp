@@ -204,11 +204,7 @@ void BackgroundSlicingProcess::process_fff()
             wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, new wxCommandEvent(m_event_export_began_id));
             finalize_gcode(m_export_path, m_export_path_on_removable_media);
         }
-        else if (!m_upload_job.empty())
-        {
-            wxQueueEvent(GUI::wxGetApp().mainframe->m_plater, new wxCommandEvent(m_event_export_began_id));
-            prepare_upload(m_upload_job);
-        }
+
         // Note: Don't set 100% here - data conversion (85-100%) happens during preview reload
         this->set_step_done(bspsGCodeFinalize);
     }
@@ -674,19 +670,6 @@ void BackgroundSlicingProcess::schedule_export(const std::string &path, bool exp
     m_export_path_on_removable_media = export_path_on_removable_media;
 }
 
-void BackgroundSlicingProcess::schedule_upload(Slic3r::PrintHostJob upload_job)
-{
-    assert(m_export_path.empty());
-    if (!m_export_path.empty())
-        return;
-
-    // Guard against entering the export step before changing the export path.
-    std::scoped_lock<std::mutex> lock(m_print->state_mutex());
-    this->invalidate_step(bspsGCodeFinalize);
-    m_export_path.clear();
-    m_upload_job = std::move(upload_job);
-}
-
 void BackgroundSlicingProcess::reset_export()
 {
     assert(!this->running());
@@ -770,6 +753,60 @@ void BackgroundSlicingProcess::direct_export_gcode(const std::string &path, bool
     }
 
     m_print->set_status(100, GUI::format(_L("G-code file exported to %1%"), export_path));
+}
+
+// preFlight: Prepare upload directly from in-memory G-code — no re-slicing needed.
+// Writes the virtual G-code buffer to a temp file, runs post-processing scripts,
+// and sets the source path on the upload job so it's ready for enqueue().
+void BackgroundSlicingProcess::direct_prepare_upload(Slic3r::PrintHostJob &upload_job)
+{
+    // Get virtual file from memory
+    VirtualGCodeFile *vf_to_export = nullptr;
+    if (m_gcode_result)
+    {
+        vf_to_export = m_gcode_result->output_virtual_file ? m_gcode_result->output_virtual_file
+                                                           : m_gcode_result->virtual_gcode_file;
+    }
+
+    if (!vf_to_export)
+    {
+        throw Slic3r::ExportError("No G-code available for upload. Please slice the model first.");
+    }
+
+    // Generate a unique temp path for the upload source file
+    boost::filesystem::path source_path = boost::filesystem::temp_directory_path() /
+                                          boost::filesystem::unique_path("." SLIC3R_APP_KEY
+                                                                         ".upload.%%%%-%%%%-%%%%-%%%%");
+
+    // Bulk write the entire G-code buffer to the temp file
+    const std::string &buffer = vf_to_export->get_buffer();
+    FILE *file = boost::nowide::fopen(source_path.string().c_str(), "wb");
+    if (!file)
+    {
+        throw Slic3r::ExportError("Failed to open temporary file for upload");
+    }
+
+    size_t written = fwrite(buffer.c_str(), 1, buffer.size(), file);
+    fclose(file);
+
+    if (written != buffer.size())
+    {
+        boost::filesystem::remove(source_path);
+        throw Slic3r::ExportError("Failed to write G-code to temporary file for upload");
+    }
+
+    // Finalize the upload filename with print statistics
+    upload_job.upload_data.upload_path = m_fff_print->print_statistics().finalize_output_path(
+        upload_job.upload_data.upload_path.string());
+
+    // Run post-processing scripts if configured
+    std::string source_path_str = source_path.string();
+    std::string output_name_str = upload_job.upload_data.upload_path.string();
+    if (run_post_process_scripts(source_path_str, false, upload_job.printhost->get_name(), output_name_str,
+                                 m_fff_print->full_print_config()))
+        upload_job.upload_data.upload_path = output_name_str;
+
+    upload_job.upload_data.source_path = std::move(source_path);
 }
 
 // G-code is generated in m_temp_output_path.
@@ -912,76 +949,6 @@ void BackgroundSlicingProcess::finalize_gcode(const std::string &path, const boo
     }
 
     m_print->set_status(100, GUI::format(_L("G-code file exported to %1%"), export_path));
-}
-
-// A print host upload job has been scheduled, enqueue it to the printhost job queue
-void BackgroundSlicingProcess::prepare_upload(PrintHostJob &upload_job)
-{
-    // Generate a unique temp path to which the gcode/zip file is copied/exported
-    boost::filesystem::path source_path = boost::filesystem::temp_directory_path() /
-                                          boost::filesystem::unique_path("." SLIC3R_APP_KEY
-                                                                         ".upload.%%%%-%%%%-%%%%-%%%%");
-
-    if (m_print == m_fff_print)
-    {
-        m_print->set_status(95, _u8L("Running post-processing scripts"));
-        // Get virtual file to export
-        Slic3r::VirtualGCodeFile *vf_to_export = nullptr;
-        if (m_gcode_result)
-        {
-            vf_to_export = m_gcode_result->output_virtual_file ? m_gcode_result->output_virtual_file
-                                                               : m_gcode_result->virtual_gcode_file;
-        }
-
-        if (vf_to_export)
-        {
-            try
-            {
-                FILE *file = boost::nowide::fopen(source_path.string().c_str(), "wb");
-                if (!file)
-                {
-                    throw Slic3r::RuntimeError("Failed to open file for upload preparation");
-                }
-
-                for (size_t i = 0; i < vf_to_export->line_count(); ++i)
-                {
-                    std::string line = vf_to_export->get_line(i);
-                    if (fwrite(line.c_str(), 1, line.size(), file) != line.size())
-                    {
-                        fclose(file);
-                        boost::filesystem::remove(source_path);
-                        throw Slic3r::RuntimeError("Failed to write G-code for upload");
-                    }
-                }
-
-                fclose(file);
-            }
-            catch (const std::exception &e)
-            {
-                throw Slic3r::RuntimeError(std::string("Failed to prepare G-code for upload: ") + e.what());
-            }
-        }
-        else
-        {
-            throw Slic3r::RuntimeError("No G-code available for upload");
-        }
-        upload_job.upload_data.upload_path = m_fff_print->print_statistics().finalize_output_path(
-            upload_job.upload_data.upload_path.string());
-        // Make a copy of the source path, as run_post_process_scripts() is allowed to change it when making a copy of the source file
-        // (not here, but when the final target is a file).
-        std::string source_path_str = source_path.string();
-        std::string output_name_str = upload_job.upload_data.upload_path.string();
-        if (run_post_process_scripts(source_path_str, false, upload_job.printhost->get_name(), output_name_str,
-                                     m_fff_print->full_print_config()))
-            upload_job.upload_data.upload_path = output_name_str;
-    }
-
-    m_print->set_status(100, GUI::format(_L("Scheduling upload to `%1%`. See Window -> Print Host Upload Queue"),
-                                         upload_job.printhost->get_host()));
-
-    upload_job.upload_data.source_path = std::move(source_path);
-
-    GUI::wxGetApp().printhost_job_queue().enqueue(std::move(upload_job));
 }
 
 // Executed by the background thread, to start a task on the UI thread.

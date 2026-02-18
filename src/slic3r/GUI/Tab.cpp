@@ -734,6 +734,14 @@ void Tab::update_changed_ui()
     if (m_postpone_update_ui)
         return;
 
+    // preFlight: Refresh parent-dependent state every time, not just in load_current_preset().
+    // m_opt_status_value and m_bmp_non_system can become stale if the parent preset reference
+    // changes after the initial load (e.g., preset reload, import, or config bundle update).
+    // This prevents all lock icons from turning into bullets when the parent is temporarily lost.
+    const Preset *preset_parent = m_presets->get_selected_preset_parent();
+    m_opt_status_value = (preset_parent ? osSystemValue : 0) | osInitValue;
+    update_ui_items_related_on_parent_preset(preset_parent);
+
     const bool deep_compare = m_type != Preset::TYPE_FILAMENT;
     auto dirty_options = m_presets->current_dirty_options(deep_compare);
     auto nonsys_options = m_presets->current_different_from_parent_options(deep_compare);
@@ -1378,6 +1386,30 @@ void Tab::on_value_change(const std::string &opt_key, const boost::any &value)
             new_conf.set_key_value("enable_manual_fan_speeds", new ConfigOptionBools({false}));
             load_config(new_conf);
             return; // load_config will trigger update()
+        }
+    }
+    // preFlight: Manual fan speeds and auto cooling are mutually exclusive —
+    // auto cooling dynamically adjusts fan speed per layer time, overriding manual values.
+    if (opt_key == "enable_manual_fan_speeds" && m_config->has("cooling"))
+    {
+        bool manual_enabled = m_config->opt_bool("enable_manual_fan_speeds", 0);
+        if (manual_enabled && m_config->opt_bool("cooling", 0))
+        {
+            DynamicPrintConfig new_conf = *m_config;
+            new_conf.set_key_value("cooling", new ConfigOptionBools({false}));
+            load_config(new_conf);
+            return;
+        }
+    }
+    if (opt_key == "cooling" && m_config->has("enable_manual_fan_speeds"))
+    {
+        bool cooling_enabled = m_config->opt_bool("cooling", 0);
+        if (cooling_enabled && m_config->opt_bool("enable_manual_fan_speeds", 0))
+        {
+            DynamicPrintConfig new_conf = *m_config;
+            new_conf.set_key_value("enable_manual_fan_speeds", new ConfigOptionBools({false}));
+            load_config(new_conf);
+            return;
         }
     }
 
@@ -3276,7 +3308,13 @@ void TabFilament::load_current_preset()
                 break;
             }
         }
-        assert(m_active_extruder >= 0);
+        // preFlight: Guard against no match found (e.g. after Orca bundle import where the
+        // newly imported preset doesn't yet match any extruder_filaments entry)
+        if (m_active_extruder < 0)
+        {
+            m_active_extruder = 0;
+            m_preset_bundle->extruders_filaments[0].select_filament(m_presets->get_idx_selected());
+        }
 
         m_presets_choice->set_extruder_idx(m_active_extruder);
         if (m_active_extruder != m_extruders_cb->GetSelection())

@@ -93,6 +93,11 @@ public:
     };
     virtual bool get_machine_limits(wxString &msg, MachineLimitsResult &result) const { return false; }
 
+    // preFlight: Check if file already exists on the print host before uploading.
+    // Returns true if file definitely exists. Returns false if file doesn't exist
+    // OR the check failed (network error, unsupported host) — upload proceeds either way.
+    virtual bool file_exists(const boost::filesystem::path &upload_path, wxString &error) const { return false; }
+
     static PrintHost *get_print_host(DynamicPrintConfig *config);
 
 protected:

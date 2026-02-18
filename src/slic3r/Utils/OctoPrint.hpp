@@ -42,6 +42,7 @@ public:
     std::string get_host() const override { return m_host; }
     const std::string &get_apikey() const { return m_apikey; }
     const std::string &get_cafile() const { return m_cafile; }
+    bool file_exists(const boost::filesystem::path &upload_path, wxString &error) const override;
 
 protected:
 #ifdef WIN32

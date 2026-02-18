@@ -34,21 +34,31 @@ wxBEGIN_EVENT_TABLE(ScrollBar, wxPanel) EVT_PAINT(ScrollBar::OnPaint) EVT_LEFT_D
     EVT_LEFT_UP(ScrollBar::OnMouse) EVT_MOTION(ScrollBar::OnMouse) EVT_MOUSEWHEEL(ScrollBar::OnMouseWheel)
         EVT_SIZE(ScrollBar::OnSize) EVT_MOUSE_CAPTURE_LOST(ScrollBar::OnMouseCaptureLost) wxEND_EVENT_TABLE()
 
-            ScrollBar::ScrollBar(wxWindow *parent, wxWindowID id, const wxPoint &pos, const wxSize &size)
+            ScrollBar::ScrollBar(wxWindow *parent, wxWindowID id, const wxPoint &pos, const wxSize &size,
+                                 int orientation)
     : wxPanel(parent, id, pos, size, wxFULL_REPAINT_ON_RESIZE)
+    , m_orientation(orientation)
     , m_position(0)
     , m_thumbSize(1)
     , m_range(1)
     , m_pageSize(1)
     , m_dragging(false)
-    , m_dragStartY(0)
+    , m_dragStartCoord(0)
     , m_dragStartPos(0)
 {
     SetBackgroundStyle(wxBG_STYLE_PAINT);
     int width = GetScaledScrollbarWidth();
-    int minHeight = Slic3r::GUI::wxGetApp().em_unit() * 5; // 50px at 100%
-    SetMinSize(wxSize(width, minHeight));
-    SetMaxSize(wxSize(width, -1));
+    int minExtent = Slic3r::GUI::wxGetApp().em_unit() * 5; // 50px at 100%
+    if (m_orientation == wxVERTICAL)
+    {
+        SetMinSize(wxSize(width, minExtent));
+        SetMaxSize(wxSize(width, -1));
+    }
+    else
+    {
+        SetMinSize(wxSize(minExtent, width));
+        SetMaxSize(wxSize(-1, width));
+    }
 }
 
 void ScrollBar::SetScrollbar(int position, int thumbSize, int range, int pageSize)
@@ -75,8 +85,10 @@ void ScrollBar::OnPaint(wxPaintEvent &event)
     wxAutoBufferedPaintDC dc(this);
     bool is_dark = Slic3r::GUI::wxGetApp().dark_mode();
 
-    // Background - match sidebar panel background exactly
-    wxColour bgColor = is_dark ? UIColors::InputBackgroundDark() : UIColors::InputBackgroundLight();
+    // Background - use per-instance override if set, otherwise default from UIColors
+    wxColour bgColor = m_trackColour.IsOk() ? m_trackColour
+                       : is_dark            ? UIColors::InputBackgroundDark()
+                                            : UIColors::InputBackgroundLight();
     dc.SetBackground(wxBrush(bgColor));
     dc.Clear();
 
@@ -119,7 +131,7 @@ void ScrollBar::OnMouse(wxMouseEvent &event)
         {
             // Start dragging thumb
             m_dragging = true;
-            m_dragStartY = event.GetY();
+            m_dragStartCoord = PrimaryCoord(event.GetPosition());
             m_dragStartPos = m_position;
             CaptureMouse();
         }
@@ -129,19 +141,13 @@ void ScrollBar::OnMouse(wxMouseEvent &event)
             wxRect trackRect = GetTrackRect();
             if (trackRect.Contains(event.GetPosition()))
             {
-                int clickY = event.GetY();
-                int thumbY = YFromPosition();
+                int clickCoord = PrimaryCoord(event.GetPosition());
+                int thumbCoord = CoordFromPosition();
 
-                if (clickY < thumbY)
-                {
-                    // Page up
+                if (clickCoord < thumbCoord)
                     SetThumbPosition(m_position - m_pageSize);
-                }
                 else
-                {
-                    // Page down
                     SetThumbPosition(m_position + m_pageSize);
-                }
                 NotifyScroll(wxEVT_SCROLL_THUMBTRACK);
             }
         }
@@ -160,13 +166,13 @@ void ScrollBar::OnMouse(wxMouseEvent &event)
     }
     else if (event.Dragging() && m_dragging)
     {
-        int deltaY = event.GetY() - m_dragStartY;
-        int trackHeight = GetTrackRect().GetHeight() - ThumbPixelSize();
+        int deltaCoord = PrimaryCoord(event.GetPosition()) - m_dragStartCoord;
+        int trackExtent = PrimarySize(GetTrackRect().GetSize()) - ThumbPixelSize();
 
-        if (trackHeight > 0)
+        if (trackExtent > 0)
         {
             int scrollRange = m_range - m_thumbSize;
-            int deltaPos = (deltaY * scrollRange) / trackHeight;
+            int deltaPos = (deltaCoord * scrollRange) / trackExtent;
             SetThumbPosition(m_dragStartPos + deltaPos);
             NotifyScroll(wxEVT_SCROLL_THUMBTRACK);
         }
@@ -208,63 +214,66 @@ void ScrollBar::OnMouseCaptureLost(wxMouseCaptureLostEvent &event)
     Refresh();
 }
 
-int ScrollBar::PositionFromY(int y) const
+int ScrollBar::PositionFromCoord(int coord) const
 {
     wxRect trackRect = GetTrackRect();
     int thumbSize = ThumbPixelSize();
-    int usableHeight = trackRect.GetHeight() - thumbSize;
+    int usableExtent = PrimarySize(trackRect.GetSize()) - thumbSize;
 
-    if (usableHeight <= 0)
+    if (usableExtent <= 0)
         return 0;
 
-    int relativeY = y - trackRect.GetTop() - thumbSize / 2;
-    relativeY = std::max(0, std::min(relativeY, usableHeight));
+    int origin = (m_orientation == wxVERTICAL) ? trackRect.GetTop() : trackRect.GetLeft();
+    int relative = coord - origin - thumbSize / 2;
+    relative = std::max(0, std::min(relative, usableExtent));
 
     int scrollRange = m_range - m_thumbSize;
-    return (relativeY * scrollRange) / usableHeight;
+    return (relative * scrollRange) / usableExtent;
 }
 
-int ScrollBar::YFromPosition() const
+int ScrollBar::CoordFromPosition() const
 {
     wxRect trackRect = GetTrackRect();
     int thumbSize = ThumbPixelSize();
-    int usableHeight = trackRect.GetHeight() - thumbSize;
+    int usableExtent = PrimarySize(trackRect.GetSize()) - thumbSize;
 
-    if (usableHeight <= 0 || m_range <= m_thumbSize)
-        return trackRect.GetTop();
+    if (usableExtent <= 0 || m_range <= m_thumbSize)
+        return (m_orientation == wxVERTICAL) ? trackRect.GetTop() : trackRect.GetLeft();
 
     int scrollRange = m_range - m_thumbSize;
-    int offset = (m_position * usableHeight) / scrollRange;
-    return trackRect.GetTop() + offset;
+    int offset = (m_position * usableExtent) / scrollRange;
+    return ((m_orientation == wxVERTICAL) ? trackRect.GetTop() : trackRect.GetLeft()) + offset;
 }
 
 int ScrollBar::ThumbPixelSize() const
 {
     wxRect trackRect = GetTrackRect();
-    int trackHeight = trackRect.GetHeight();
+    int trackExtent = PrimarySize(trackRect.GetSize());
 
     if (m_range <= 0)
-        return trackHeight;
+        return trackExtent;
 
-    int thumbSize = (m_thumbSize * trackHeight) / m_range;
+    int thumbSize = (m_thumbSize * trackExtent) / m_range;
     return std::max(GetScaledMinThumbSize(), thumbSize);
 }
 
 wxRect ScrollBar::GetThumbRect() const
 {
     wxRect trackRect = GetTrackRect();
-    int thumbHeight = ThumbPixelSize();
-    int thumbY = YFromPosition();
-
-    // Inset thumb slightly from track edges (scaled for DPI)
+    int thumbExtent = ThumbPixelSize();
+    int thumbCoord = CoordFromPosition();
     int inset = GetScaledInset();
-    return wxRect(trackRect.GetLeft() + inset, thumbY, trackRect.GetWidth() - inset * 2, thumbHeight);
+
+    if (m_orientation == wxVERTICAL)
+        return wxRect(trackRect.GetLeft() + inset, thumbCoord, trackRect.GetWidth() - inset * 2, thumbExtent);
+    else
+        return wxRect(thumbCoord, trackRect.GetTop() + inset, thumbExtent, trackRect.GetHeight() - inset * 2);
 }
 
 wxRect ScrollBar::GetTrackRect() const
 {
     const wxSize size = GetClientSize();
-    int margin = GetScaledInset(); // Use same scaling as inset
+    int margin = GetScaledInset();
     return wxRect(margin, margin, size.x - margin * 2, size.y - margin * 2);
 }
 
@@ -273,15 +282,23 @@ void ScrollBar::NotifyScroll(wxEventType eventType)
     wxScrollEvent event(eventType, GetId());
     event.SetEventObject(this);
     event.SetPosition(m_position);
-    event.SetOrientation(wxVERTICAL);
+    event.SetOrientation(m_orientation);
     ProcessWindowEvent(event);
 }
 
 void ScrollBar::msw_rescale()
 {
     int width = GetScaledScrollbarWidth();
-    int minHeight = Slic3r::GUI::wxGetApp().em_unit() * 5; // 50px at 100%
-    SetMinSize(wxSize(width, minHeight));
-    SetMaxSize(wxSize(width, -1));
+    int minExtent = Slic3r::GUI::wxGetApp().em_unit() * 5; // 50px at 100%
+    if (m_orientation == wxVERTICAL)
+    {
+        SetMinSize(wxSize(width, minExtent));
+        SetMaxSize(wxSize(width, -1));
+    }
+    else
+    {
+        SetMinSize(wxSize(minExtent, width));
+        SetMaxSize(wxSize(-1, width));
+    }
     Refresh();
 }

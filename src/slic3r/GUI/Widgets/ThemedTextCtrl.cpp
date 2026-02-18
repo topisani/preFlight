@@ -3,6 +3,7 @@
 ///|/ preFlight is based on PrusaSlicer and released under AGPLv3 or higher
 ///|/
 #include "ThemedTextCtrl.hpp"
+#include "ScrollablePanel.hpp"
 
 namespace Slic3r
 {
@@ -112,6 +113,33 @@ void ThemedTextCtrl::RefreshThemedColors()
 #ifdef _WIN32
 WXLRESULT ThemedTextCtrl::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam)
 {
+    // preFlight: For multiline text controls, intercept WM_MOUSEWHEEL at the Win32 level
+    // to prevent the native EDIT control from consuming scroll events. Only allow text
+    // scrolling when the user has clicked inside the control (m_wheelScrollActive).
+    // Otherwise, forward the scroll to the ScrollablePanel ancestor for page scrolling.
+    if (nMsg == WM_MOUSEWHEEL && (GetWindowStyleFlag() & wxTE_MULTILINE))
+    {
+        if (!m_wheelScrollActive)
+        {
+            // Not active — forward the scroll to the ScrollablePanel ancestor for page scrolling
+            for (wxWindow *win = GetParent(); win; win = win->GetParent())
+            {
+                if (auto *sp = dynamic_cast<ScrollablePanel *>(win))
+                    return sp->MSWWindowProc(nMsg, wParam, lParam);
+            }
+            return 0; // No ScrollablePanel found — swallow the event
+        }
+
+        // User clicked in this text area — scroll its content manually via EM_LINESCROLL
+        // (native WM_MOUSEWHEEL handler doesn't work because we stripped WS_VSCROLL)
+        short delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        int lines = -(delta / WHEEL_DELTA) * 3;
+        SendMessage((HWND) GetHWND(), EM_LINESCROLL, 0, lines);
+        // Fall through to wxTextCtrl::MSWWindowProc so wxEVT_MOUSEWHEEL fires
+        // and TextInput's handler can sync the custom scrollbar.
+        // The native EDIT won't double-scroll because WS_VSCROLL is stripped.
+    }
+
     // Handle WM_ERASEBKGND to paint our own background
     if (nMsg == WM_ERASEBKGND && m_hasThemedColors && m_themedBgColor.IsOk())
     {

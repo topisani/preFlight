@@ -1574,6 +1574,22 @@ void Layer::RoleIndex::build_from_layer(const Layer *layer)
         interlocking_zone.clear();
     }
 
+    // Build bridge zone for over-bridge speed detection
+    // Collect stBottomBridge and stInternalBridge surfaces and expand by 1mm
+    // (same expansion as separate_infill_above_bridges uses)
+    {
+        ExPolygons bridges;
+        for (const LayerRegion *layerm : layer->regions())
+            for (const Surface &surface : layerm->fill_surfaces())
+                if (surface.surface_type == stBottomBridge || surface.surface_type == stInternalBridge)
+                    bridges.push_back(surface.expolygon);
+
+        if (!bridges.empty())
+            bridge_zone = offset_ex(union_ex(bridges), scale_(1.0));
+        else
+            bridge_zone.clear();
+    }
+
     // Collect solid infill regions (stInternalSolid) but exclude top solid support
     // We query fill_surfaces directly to access surface types
     ExPolygons all_solid_infill;

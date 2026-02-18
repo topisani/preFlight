@@ -403,6 +403,11 @@ MainFrame::MainFrame(const int font_point_size)
          [this](wxMoveEvent &event)
          {
              event.Skip();
+             // Propagate DPIAware's updated em_unit to GUI_App's cached copy.
+             // DPIAware's MOVE_END handler updates m_em_unit for the new DPI.
+             // Use CallAfter so DPIAware's handler runs first (it was bound earlier,
+             // so it fires after this handler in wxWidgets' LIFO bind order).
+             CallAfter([this]() { wxGetApp().update_fonts(this); });
              if (m_plater)
              {
                  if (auto *c = m_plater->canvas3D())
@@ -1833,12 +1838,10 @@ static wxMenu *generate_help_menu()
 {
     wxMenu *helpMenu = new wxMenu();
 
-    append_menu_item(helpMenu, wxID_ANY, wxString::Format(_L("%s &Website"), SLIC3R_APP_NAME),
-                     wxString::Format(_L("Open the %s website in your browser"), SLIC3R_APP_NAME),
-                     [](wxCommandEvent &) {
-                         wxGetApp().open_browser_with_warning_dialog("https://github.com/oozebot/preFlight", nullptr,
-                                                                     false);
-                     });
+    append_menu_item(
+        helpMenu, wxID_ANY, wxString::Format(_L("%s &Website"), SLIC3R_APP_NAME),
+        wxString::Format(_L("Open the %s website in your browser"), SLIC3R_APP_NAME), [](wxCommandEvent &)
+        { wxGetApp().open_browser_with_warning_dialog("https://github.com/oozebot/preFlight", nullptr, false); });
     // // TRN Item from "Help" menu
     // append_menu_item(helpMenu, wxID_ANY, wxString::Format(_L("&Quick Start"), SLIC3R_APP_NAME),
     //     wxString::Format(_L("Open the %s website in your browser"), SLIC3R_APP_NAME),
@@ -1852,7 +1855,8 @@ static wxMenu *generate_help_menu()
     helpMenu->AppendSeparator();
     append_menu_item(helpMenu, wxID_ANY, _L("Software &Releases"),
                      _L("Open the software releases page in your browser"),
-                     [](wxCommandEvent &) {
+                     [](wxCommandEvent &)
+                     {
                          wxGetApp().open_browser_with_warning_dialog("https://github.com/oozebot/preFlight/releases",
                                                                      nullptr, false);
                      });
@@ -1871,7 +1875,8 @@ static wxMenu *generate_help_menu()
                      [](wxCommandEvent &) { Slic3r::GUI::desktop_open_datadir_folder(); });
     append_menu_item(helpMenu, wxID_ANY, _L("Report an I&ssue"),
                      wxString::Format(_L("Report an issue on %s"), SLIC3R_APP_NAME),
-                     [](wxCommandEvent &) {
+                     [](wxCommandEvent &)
+                     {
                          wxGetApp().open_browser_with_warning_dialog("https://github.com/oozebot/preFlight/issues/new",
                                                                      nullptr, false);
                      });
@@ -2080,9 +2085,8 @@ void MainFrame::init_menubar_as_editor()
             this);
         append_menu_item(
             import_menu, wxID_ANY, _L("Import &OrcaSlicer Bundle") + dots,
-            _L("Import printer/filament/process profiles from an OrcaSlicer bundle"),
-            [this](wxCommandEvent &) { import_orca_bundle(this); }, "import_config_bundle", nullptr,
-            []() { return true; }, this);
+            _L("Import printer/filament/process profiles from an OrcaSlicer bundle"), [this](wxCommandEvent &)
+            { import_orca_bundle(this); }, "import_config_bundle", nullptr, []() { return true; }, this);
         append_submenu(fileMenu, import_menu, wxID_ANY, _L("&Import"), "");
 
         wxMenu *export_menu = new wxMenu();
@@ -3098,7 +3102,7 @@ SettingsDialog::SettingsDialog(MainFrame *mainframe)
     if (wxGetApp().is_gcode_viewer())
         return;
 
-        // Load the icon either from the exe, or from the ico file.
+    // Load the icon either from the exe, or from the ico file.
 #if _WIN32
     {
         TCHAR szExeFileName[MAX_PATH];
@@ -3214,9 +3218,9 @@ void SettingsDialog::on_dpi_changed(const wxRect &suggested_rect)
     if (wxGetApp().is_gcode_viewer())
         return;
 
-        // #ysFIXME - delete_after_testing
-        //    const int& em = em_unit();
-        //    const wxSize& size = wxSize(85 * em, 50 * em);
+    // #ysFIXME - delete_after_testing
+    //    const int& em = em_unit();
+    //    const wxSize& size = wxSize(85 * em, 50 * em);
 
 #ifdef _WIN32
     m_tabpanel->Rescale();

@@ -420,8 +420,7 @@ void AppUpdater::priv::version_check(const std::string &version_check_url)
             std::string notes_error;
             std::string notes_body;
             http_get_file(
-                notes_url, 32 * 1024,
-                [](Http::Progress) { return true; },
+                notes_url, 32 * 1024, [](Http::Progress) { return true; },
                 [&](std::string body, std::string &)
                 {
                     boost::trim(body);

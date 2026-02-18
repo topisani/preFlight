@@ -81,6 +81,12 @@ private:
     HBRUSH m_hBgBrush = NULL; // Native GDI brush for MSWControlColor
 #endif
     bool m_hasThemedColors = false;
+    bool m_wheelScrollActive = false; // preFlight: true after click inside multiline, cleared on mouse-leave
+
+public:
+    /// preFlight: Allow TextInput to activate/deactivate wheel scrolling for multiline controls
+    void SetWheelScrollActive(bool active) { m_wheelScrollActive = active; }
+    bool GetWheelScrollActive() const { return m_wheelScrollActive; }
 };
 
 } // namespace GUI

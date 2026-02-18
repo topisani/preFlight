@@ -39,6 +39,7 @@ public:
     }
     std::string get_host() const override { return host; }
     bool get_machine_limits(wxString &msg, MachineLimitsResult &result) const override;
+    bool file_exists(const boost::filesystem::path &upload_path, wxString &error) const override;
 
 private:
     enum class ConnectionType

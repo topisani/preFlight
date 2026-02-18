@@ -170,6 +170,14 @@ std::string OrcaKeyMapper::transform_fuzzy_skin(const std::string &value)
     return value;
 }
 
+std::string OrcaKeyMapper::transform_ensure_vertical_shell(const std::string &value)
+{
+    // Orca: bool "1"/"0" -> preFlight: enum "enabled"/"disabled"
+    if (value == "1" || value == "true")
+        return "enabled";
+    return "disabled";
+}
+
 // -----------------------------------------------------------------------
 // Helper macros for building mapping tables concisely
 // -----------------------------------------------------------------------
@@ -320,6 +328,28 @@ void OrcaKeyMapper::build_printer_mappings()
         ORCA_ONLY("purge_in_prime_tower"),
         ORCA_ONLY("time_cost"),
         ORCA_ONLY("upward_compatible_machine"),
+        ORCA_ONLY("bed_exclude_area"),
+        ORCA_ONLY("bed_temperature_formula"),
+        ORCA_ONLY("default_nozzle_volume_type"),
+        ORCA_ONLY("enable_power_loss_recovery"),
+        ORCA_ONLY("extruder_printable_height"),
+        ORCA_ONLY("extruder_type"),
+        ORCA_ONLY("extruder_variant_list"),
+        ORCA_ONLY("file_start_gcode"),
+        ORCA_ONLY("grab_length"),
+        ORCA_ONLY("master_extruder_id"),
+        ORCA_ONLY("nozzle_flush_dataset"),
+        ORCA_ONLY("physical_extruder_map"),
+        ORCA_ONLY("printer_agent"),
+        ORCA_ONLY("printer_extruder_id"),
+        ORCA_ONLY("printer_extruder_variant"),
+        ORCA_ONLY("retract_lift_enforce"),
+        ORCA_ONLY("support_object_skip_flush"),
+        ORCA_ONLY("wrapping_detection_gcode"),
+        ORCA_ONLY("wrapping_detection_layers"),
+        ORCA_ONLY("extruder_printable_area"),
+        ORCA_ONLY("accel_to_decel_enable"),
+        ORCA_ONLY("accel_to_decel_factor"),
     };
 }
 
@@ -373,6 +403,7 @@ void OrcaKeyMapper::build_filament_mappings()
         DIRECT("filament_multitool_ramming"),
         DIRECT("filament_multitool_ramming_flow"),
         DIRECT("filament_multitool_ramming_volume"),
+        DIRECT("filament_vendor"),
 
         // Renamed mappings
         RENAMED("filament_flow_ratio", "extrusion_multiplier"),
@@ -414,7 +445,6 @@ void OrcaKeyMapper::build_filament_mappings()
         ORCA_ONLY("textured_cool_plate_temp_initial_layer"),
 
         // Orca-only (no preFlight equivalent)
-        ORCA_ONLY("filament_vendor"),
         ORCA_ONLY("pressure_advance"),
         ORCA_ONLY("enable_pressure_advance"),
         ORCA_ONLY("adaptive_pressure_advance"),
@@ -470,6 +500,7 @@ void OrcaKeyMapper::build_process_mappings()
         DIRECT("small_perimeter_speed"),
         DIRECT("travel_speed"),
         DIRECT("bridge_speed"),
+        DIRECT("bridge_acceleration"),
         DIRECT("brim_width"),
         DIRECT("skirt_distance"),
         DIRECT("skirt_height"),
@@ -484,6 +515,14 @@ void OrcaKeyMapper::build_process_mappings()
         DIRECT("gcode_comments"),
         DIRECT("print_settings_id"),
         DIRECT("only_one_perimeter_first_layer"),
+        DIRECT("default_acceleration"),
+        DIRECT("infill_anchor"),
+        DIRECT("infill_anchor_max"),
+        DIRECT("resolution"),
+        DIRECT("travel_acceleration"),
+        DIRECT("wall_distribution_count"),
+        DIRECT("wall_transition_angle"),
+        DIRECT("min_skirt_length"),
 
         // Renamed mappings
         RENAMED("initial_layer_print_height", "first_layer_height"),
@@ -532,6 +571,23 @@ void OrcaKeyMapper::build_process_mappings()
         RENAMED("enable_arc_fitting", "arc_fitting"),
         RENAMED("spiral_mode", "spiral_vase"),
         RENAMED("enable_overhang_speed", "enable_dynamic_overhang_speeds"),
+        RENAMED("bridge_flow", "bridge_flow_ratio"),
+        RENAMED("detect_thin_wall", "thin_walls"),
+        RENAMED("line_width", "extrusion_width"),
+        RENAMED("filename_format", "output_filename_format"),
+        RENAMED("support_speed", "support_material_speed"),
+        RENAMED("initial_layer_acceleration", "first_layer_acceleration"),
+        RENAMED("inner_wall_acceleration", "perimeter_acceleration"),
+        RENAMED("outer_wall_acceleration", "external_perimeter_acceleration"),
+        RENAMED("sparse_infill_acceleration", "infill_acceleration"),
+        RENAMED("internal_solid_infill_acceleration", "solid_infill_acceleration"),
+        RENAMED("top_surface_acceleration", "top_solid_infill_acceleration"),
+        // Orca overhang: 1/4 = 25% overhang (75% overlap) ... 4/4 = full overhang (0% overlap)
+        // preFlight:    speed_0 = 0% overlap (bridge) ... speed_3 = 75% overlap
+        RENAMED("overhang_1_4_speed", "overhang_speed_3"),
+        RENAMED("overhang_2_4_speed", "overhang_speed_2"),
+        RENAMED("overhang_3_4_speed", "overhang_speed_1"),
+        RENAMED("overhang_4_4_speed", "overhang_speed_0"),
 
         // Tree support renamed keys
         RENAMED("tree_support_branch_angle", "support_tree_angle"),
@@ -553,6 +609,7 @@ void OrcaKeyMapper::build_process_mappings()
         XFORM("wall_generator", "perimeter_generator", transform_wall_generator),
         XFORM("gcode_label_objects", "gcode_label_objects", transform_gcode_label_objects),
         XFORM("fuzzy_skin", "fuzzy_skin", transform_fuzzy_skin),
+        XFORM("ensure_vertical_shell_thickness", "ensure_vertical_shell_thickness", transform_ensure_vertical_shell),
 
         // Orca-only (no preFlight equivalent)
         ORCA_ONLY("timelapse_type"),
@@ -567,6 +624,34 @@ void OrcaKeyMapper::build_process_mappings()
         ORCA_ONLY("reduce_crossing_wall"),
         ORCA_ONLY("max_travel_detour_distance"),
         ORCA_ONLY("xy_hole_compensation"),
+        ORCA_ONLY("align_infill_direction_to_model"),
+        ORCA_ONLY("detect_narrow_internal_solid_infill"),
+        ORCA_ONLY("detect_overhang_wall"),
+        ORCA_ONLY("default_jerk"),
+        ORCA_ONLY("gap_fill_target"),
+        ORCA_ONLY("infill_combination_max_layer_height"),
+        ORCA_ONLY("infill_jerk"),
+        ORCA_ONLY("initial_layer_jerk"),
+        ORCA_ONLY("initial_layer_min_bead_width"),
+        ORCA_ONLY("inner_wall_jerk"),
+        ORCA_ONLY("internal_solid_infill_pattern"),
+        ORCA_ONLY("min_bead_width"),
+        ORCA_ONLY("minimum_sparse_infill_area"),
+        ORCA_ONLY("outer_wall_jerk"),
+        ORCA_ONLY("overhang_reverse_internal_only"),
+        ORCA_ONLY("role_based_wipe_speed"),
+        ORCA_ONLY("seam_gap"),
+        ORCA_ONLY("skirt_speed"),
+        ORCA_ONLY("slow_down_for_layer_cooling"),
+        ORCA_ONLY("small_area_infill_flow_compensation_model"),
+        ORCA_ONLY("solid_infill_rotate_template"),
+        ORCA_ONLY("support_remove_small_overhang"),
+        ORCA_ONLY("top_surface_jerk"),
+        ORCA_ONLY("travel_jerk"),
+        ORCA_ONLY("wipe_speed"),
+        ORCA_ONLY("exclude_object"),
+        ORCA_ONLY("dont_filter_internal_bridges"),
+        ORCA_ONLY("initial_layer_travel_speed"),
     };
 }
 

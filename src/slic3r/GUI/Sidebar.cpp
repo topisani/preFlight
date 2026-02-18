@@ -5495,6 +5495,13 @@ void PrinterSettingsPanel::OnSettingChanged(const std::string &opt_key)
     if (opt_key == "silent_mode")
     {
         UpdateMachineLimitsVisibility();
+
+        // preFlight: Trigger Tab update to rebuild the kinematics page (Machine limits).
+        // The general sync above only calls reload_config/update_dirty/update_changed_ui,
+        // which doesn't run update_fff() — so the Tab's m_use_silent_mode stays stale
+        // and the second column (stealth) persists even after stealth is turned off.
+        if (auto *tab = wxGetApp().get_tab(Preset::TYPE_PRINTER))
+            tab->update();
     }
 
     // Thumbnails validation - mirrors TabPrinter behavior

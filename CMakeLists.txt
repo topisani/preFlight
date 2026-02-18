@@ -134,9 +134,8 @@ else ()
 endif ()
 
 if (MSVC)
-    if (SLIC3R_MSVC_COMPILE_PARALLEL AND NOT IS_CLANG_CL)
-           add_compile_options(/MP)
-    endif ()
+    # preFlight: /MP disabled — Ninja already handles parallel compilation.
+    # Having both causes N×M compiler processes that exhaust heap memory.
     # /bigobj (Increase Number of Sections in .Obj file)
     # error C3859: virtual memory range for PCH exceeded; please recompile with a command line option of '-Zm90' or greater
     # Generate symbols at every build target, even for the release.

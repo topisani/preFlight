@@ -178,7 +178,7 @@ private:
     unsigned int m_last_bed_temperature;
     bool m_last_bed_temperature_reached;
     Vec3d m_pos = Vec3d::Zero();
-    
+
     // Travel speed override for first layer (mm/s). If > 0, used instead of config.travel_speed.
     double m_travel_speed_override = 0.0;
 
@@ -186,10 +186,12 @@ public:
     // Set travel speed override (mm/s). Set to 0 to clear override and use config value.
     void set_travel_speed_override(double speed) { m_travel_speed_override = speed; }
     // Get effective travel speed (mm/s) - returns override if set, otherwise config value.
-    double get_travel_speed() const { return m_travel_speed_override > 0.0 ? m_travel_speed_override : config.travel_speed.value; }
+    double get_travel_speed() const
+    {
+        return m_travel_speed_override > 0.0 ? m_travel_speed_override : config.travel_speed.value;
+    }
 
 private:
-
     enum class Acceleration
     {
         Travel,

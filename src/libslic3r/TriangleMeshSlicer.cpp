@@ -2167,10 +2167,73 @@ static void make_expolygons(const Polygons &loops, const float closing_radius, c
     // append to the supplied collection
     ExPolygons union_result = union_ex(loops, fill_type);
 
-    ExPolygons result;
+    // preFlight: Detect thin walls in raw polygon loops BEFORE union_ex merges them.
+    // The morphological closing (expand then shrink) destroys walls thinner than 2*closing_radius.
+    // After union_ex, thin walls between a CW (hole) loop and its enclosing CCW (contour) loop
+    // become implicit interior walls with no ExPolygon boundary, making them undetectable.
+    // So we check the raw loops where both boundaries still exist as separate polygons.
+    bool skip_closing = false;
     if (offset_out > 0 && offset_in < 0)
     {
+        const double threshold_sq = 4.0 * double(offset_out) * double(offset_out);
+        // Separate loops by winding: CCW (area > 0) = contours, CW (area < 0) = holes
+        std::vector<const Polygon *> cw_loops, ccw_loops;
+        for (const Polygon &loop : loops)
+        {
+            double a = loop.area();
+            if (a < 0)
+                cw_loops.push_back(&loop);
+            else if (a > 0)
+                ccw_loops.push_back(&loop);
+        }
+        // Check if any CW loop is within 2*closing_radius of a CCW loop
+        for (const Polygon *hole : cw_loops)
+        {
+            if (skip_closing)
+                break;
+            for (const Polygon *contour : ccw_loops)
+            {
+                if (skip_closing)
+                    break;
+                // Bounding box proximity check for early rejection
+                BoundingBox hbb = hole->bounding_box();
+                BoundingBox cbb = contour->bounding_box();
+                coord_t margin = coord_t(offset_out * 2);
+                if (hbb.min.x() > cbb.max.x() + margin || hbb.max.x() < cbb.min.x() - margin ||
+                    hbb.min.y() > cbb.max.y() + margin || hbb.max.y() < cbb.min.y() - margin)
+                    continue;
+                // CW loop vertices → CCW loop segments
+                const size_t cn = contour->points.size();
+                for (const Point &pt : hole->points)
+                {
+                    if (skip_closing)
+                        break;
+                    for (size_t i = 0; i < cn; ++i)
+                    {
+                        if (line_alg::distance_to_squared(Line(contour->points[i], contour->points[(i + 1) % cn]), pt) <
+                            threshold_sq)
+                        {
+                            skip_closing = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ExPolygons result;
+    if (offset_out > 0 && offset_in < 0 && !skip_closing)
+    {
         result = offset2_ex(union_result, offset_out, offset_in);
+    }
+    else if (skip_closing)
+    {
+        // Thin wall detected: skip closing, apply only extra_offset if present
+        if (extra_offset > 0)
+            result = offset_ex(union_result, float(scale_(extra_offset)));
+        else
+            result = std::move(union_result);
     }
     else if (offset_out > 0)
     {

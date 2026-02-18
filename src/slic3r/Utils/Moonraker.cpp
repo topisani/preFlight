@@ -171,6 +171,22 @@ bool Moonraker::test(wxString &msg) const
     return res;
 }
 
+// preFlight: Check if file already exists on Moonraker before uploading
+bool Moonraker::file_exists(const boost::filesystem::path &upload_path, wxString &error) const
+{
+    bool exists = false;
+    auto url = make_url((boost::format("server/files/metadata?filename=gcodes/%1%") % upload_path.string()).str());
+
+    auto http = Http::get(std::move(url));
+    set_auth(http);
+    http.ssl_revoke_best_effort(m_ssl_revoke_best_effort)
+        .on_complete([&](std::string, unsigned) { exists = true; })
+        .on_error([&](std::string, std::string, unsigned) { exists = false; })
+        .perform_sync();
+
+    return exists;
+}
+
 bool Moonraker::upload(PrintHostUpload upload_data, ProgressFn prorgess_fn, ErrorFn error_fn, InfoFn info_fn) const
 {
     // POST /server/files/upload

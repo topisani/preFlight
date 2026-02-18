@@ -8,12 +8,17 @@ else ()
     add_library(OCCTWrapper MODULE OCCTWrapper.cpp)
 endif ()
 
-# Match MSBuild output path for single-config generators
+# Place OCCTWrapper next to the main executable so dlopen()/LoadLibrary() can find it.
+# Multi-config generators (MSBuild) append the config subdirectory automatically.
+# Single-config generators (Ninja) do not: on Linux the executable is in build/src/,
+# but on Windows the packaging script expects build/src/Release/.
 get_property(_is_multi GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if (_is_multi)
     set(_occt_output_dir "${CMAKE_BINARY_DIR}/src")
-else ()
+elseif (WIN32)
     set(_occt_output_dir "${CMAKE_BINARY_DIR}/src/${CMAKE_BUILD_TYPE}")
+else ()
+    set(_occt_output_dir "${CMAKE_BINARY_DIR}/src")
 endif ()
 
 set_target_properties(OCCTWrapper

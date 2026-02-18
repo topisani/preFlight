@@ -9,6 +9,8 @@
 #include "../include/Types.hpp"
 
 #include <cfloat>
+#include <map>
+#include <vector>
 
 namespace libvgcode
 {
@@ -26,6 +28,15 @@ static const Palette DEFAULT_RANGES_COLORS{{
     {194, 82, 60},
     {148, 38, 22} // reddish
 }};
+
+// preFlight: Frequency-aware band for legend display.
+// Each band maps to one palette color and covers a range of values.
+struct ColorBand
+{
+    float low{0.0f};
+    float high{0.0f};
+    size_t count{0}; // total vertex count in this band
+};
 
 class ColorRange
 {
@@ -69,6 +80,12 @@ public:
     //
     std::vector<float> get_values() const;
     //
+    // Return the computed bands for legend display.
+    // Each band has low, high, and vertex count.
+    // preFlight: part of frequency-aware band system.
+    //
+    const std::vector<ColorBand> &get_bands() const;
+    //
     // Return the size of the palette, in bytes
     //
     std::size_t size_in_bytes_cpu() const;
@@ -90,6 +107,19 @@ private:
     // Count of different values passed to update()
     //
     std::size_t m_count{0};
+    //
+    // preFlight: Frequency map — rounded value → vertex count.
+    // Collected during update(), used by finalize() to compute bands.
+    //
+    std::map<float, size_t> m_value_counts;
+    //
+    // preFlight: Computed bands (up to palette size), populated by finalize().
+    //
+    std::vector<ColorBand> m_bands;
+    //
+    // preFlight: Whether finalize() has been called after the last update cycle.
+    //
+    bool m_finalized{false};
 
     //
     // Use the passed value to update the range.
@@ -100,6 +130,11 @@ private:
     // Call this method before reuse an instance of ColorRange.
     //
     void reset();
+    //
+    // preFlight: Compute frequency-based bands from collected value data.
+    // Called by ViewerImpl after all update() calls are complete.
+    //
+    void finalize();
 
     friend class ViewerImpl;
 };

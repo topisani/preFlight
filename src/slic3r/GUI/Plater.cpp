@@ -3039,10 +3039,19 @@ void Plater::priv::export_gcode(fs::path output_path, bool output_path_on_remova
     }
     else
     {
-        // Upload job still uses old flow for now
-        background_process.schedule_upload(std::move(upload_job));
-        this->background_process.set_task(PrintBase::TaskParams());
-        this->restart_background_process(priv::UPDATE_BACKGROUND_PROCESS_FORCE_EXPORT);
+        // preFlight: Upload directly from in-memory G-code — no re-slicing needed.
+        // Same approach as direct_export_gcode() but routes through the upload queue.
+        try
+        {
+            background_process.direct_prepare_upload(upload_job);
+
+            wxGetApp().printhost_job_queue().enqueue(std::move(upload_job));
+        }
+        catch (const std::exception &e)
+        {
+            GUI::show_error(q, e.what());
+            return;
+        }
     }
 }
 
@@ -4082,7 +4091,17 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
                 sidebar->set_btn_label(btn, invalid_str);
         }
         has_error = true;
-        s_print_statuses[s_multiple_beds.get_active_bed()] = PrintStatus::invalid;
+
+        // preFlight: If slicing failed while on Preview (the Slice button switches to Preview
+        // before starting), switch back to Prepare so the sidebar and hamburger icon are restored.
+        // Reset print status to idle so the Slice button remains active and the user can retry.
+        s_print_statuses[s_multiple_beds.get_active_bed()] = PrintStatus::idle;
+        if (is_preview_shown())
+        {
+            set_current_panel(view3D);
+            if (wxGetApp().mainframe && wxGetApp().mainframe->m_modern_tabbar)
+                wxGetApp().mainframe->m_modern_tabbar->SelectTab(GUI::ModernTabBar::TAB_PREPARE);
+        }
     }
     if (evt.cancelled())
     {
@@ -7637,10 +7656,15 @@ void Plater::send_gcode_inner(DynamicPrintConfig *physical_printer_config)
         }
     }
 
-    PrintHostSendDialog dlg(default_output_file, upload_job.printhost->get_post_upload_actions(), groups, storage_paths,
-                            storage_names);
-    if (dlg.ShowModal() == wxID_OK)
+    // preFlight: Loop to allow the user to rename the file if it already exists on the host
+    auto dialog_path = default_output_file;
+    for (;;)
     {
+        PrintHostSendDialog dlg(dialog_path, upload_job.printhost->get_post_upload_actions(), groups, storage_paths,
+                                storage_names);
+        if (dlg.ShowModal() != wxID_OK)
+            return;
+
         if (printer_technology() == ptFFF)
         {
             const std::string ext = boost::algorithm::to_lower_copy(dlg.filename().extension().string());
@@ -7662,7 +7686,30 @@ void Plater::send_gcode_inner(DynamicPrintConfig *physical_printer_config)
         upload_job.upload_data.group = dlg.group();
         upload_job.upload_data.storage = dlg.storage();
 
+        // preFlight: Check if file already exists on host before uploading
+        bool file_already_exists = false;
+        {
+            wxBusyCursor wait;
+            wxString check_error;
+            file_already_exists = upload_job.printhost->file_exists(upload_job.upload_data.upload_path, check_error);
+        }
+        if (file_already_exists)
+        {
+            MessageDialog overwrite_dlg(
+                this,
+                wxString::Format(_L("The file '%s' already exists on the printer.\n\nOverwrite it?"),
+                                 upload_job.upload_data.upload_path.filename().wstring()),
+                _L("File Already Exists"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING);
+            if (overwrite_dlg.ShowModal() != wxID_YES)
+            {
+                // Let user pick a different name — loop back to the send dialog
+                dialog_path = dlg.filename();
+                continue;
+            }
+        }
+
         p->export_gcode(fs::path(), false, std::move(upload_job));
+        break;
     }
 }
 

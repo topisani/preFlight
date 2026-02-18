@@ -1049,8 +1049,10 @@ void PlaterPresetComboBox::update()
                                      ? false
                                      : i == m_collection->get_selected_idx();
 
-        const bool is_compatible = m_type == Preset::TYPE_FILAMENT ? extruder_filaments.filament(i).is_compatible
-                                                                   : preset.is_compatible;
+        // preFlight: bounds guard — ExtruderFilaments may be stale after preset import
+        const bool is_compatible = (m_type == Preset::TYPE_FILAMENT && i < extruder_filaments.size())
+                                       ? extruder_filaments.filament(i).is_compatible
+                                       : preset.is_compatible;
 
         if (!preset.is_visible || (!is_compatible && !is_selected))
             continue;
@@ -1346,8 +1348,10 @@ void TabPresetComboBox::update()
     {
         const Preset &preset = presets[i];
 
-        const bool is_compatible = m_type == Preset::TYPE_FILAMENT ? extruder_filaments.filament(i).is_compatible
-                                                                   : preset.is_compatible;
+        // preFlight: bounds guard — ExtruderFilaments may be stale after preset import
+        const bool is_compatible = (m_type == Preset::TYPE_FILAMENT && i < extruder_filaments.size())
+                                       ? extruder_filaments.filament(i).is_compatible
+                                       : preset.is_compatible;
 
         if (!preset.is_visible || (!show_incompatible && !is_compatible && i != idx_selected))
             continue;

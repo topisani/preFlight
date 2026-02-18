@@ -1634,17 +1634,46 @@ ogStaticText::ogStaticText(wxWindow *parent, const wxString &text)
 {
     if (!text.IsEmpty())
     {
+        m_original_text = text;
         Wrap(60 * wxGetApp().em_unit());
         GetParent()->Layout();
     }
+
+    Bind(wxEVT_SIZE,
+         [this](wxSizeEvent &evt)
+         {
+             evt.Skip();
+             if (m_wrap_enabled && !m_original_text.IsEmpty())
+                 rewrap();
+         });
 }
 
 void ogStaticText::SetText(const wxString &value, bool wrap /* = true*/)
 {
+    m_original_text = value;
+    m_wrap_enabled = wrap;
     SetLabel(value);
     if (wrap)
-        Wrap(60 * wxGetApp().em_unit());
+    {
+        int w = GetClientSize().GetWidth();
+        if (w > 0)
+            Wrap(w);
+        else
+            Wrap(60 * wxGetApp().em_unit());
+    }
     GetParent()->Layout();
+}
+
+void ogStaticText::rewrap()
+{
+    int w = GetClientSize().GetWidth();
+    if (w <= 0 || m_rewrapping)
+        return;
+    m_rewrapping = true;
+    SetLabel(m_original_text);
+    Wrap(w);
+    GetParent()->Layout();
+    m_rewrapping = false;
 }
 
 void ogStaticText::SetPathEnd(const std::string &link)

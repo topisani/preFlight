@@ -72,8 +72,9 @@ void OrcaImportResultsDialog::apply_theme_overrides()
 
     if (m_scroll)
     {
-        // Reset scroll content panel and label backgrounds to match PanelBackground
+        // Reset scroll content panel, scrollbar track, and label backgrounds to match PanelBackground
         m_scroll->SetBackgroundColour(UIColors::PanelBackground());
+        m_scroll->SetTrackColour(UIColors::PanelBackground());
         wxWindow *content = m_scroll->GetContentPanel();
         if (content)
         {
@@ -156,17 +157,33 @@ void OrcaImportResultsDialog::build_ui(const OrcaConfigImporter::ImportResult &r
         }
     }
 
-    // --- Section 2: Imported with changes (lossy mappings) ---
-    if (!result.lossy_mappings.empty())
-        add_section(main_sizer, content, _L("Imported with Changes"), result.lossy_mappings, 100, true);
+    // Only show detail sections when at least one profile was actually imported
+    bool any_imported = !result.imported_printers.empty() || !result.imported_filaments.empty() ||
+                        !result.imported_prints.empty();
+    if (any_imported)
+    {
+        // --- Section 2: Imported with changes (lossy mappings) ---
+        if (!result.lossy_mappings.empty())
+            add_section(main_sizer, content, _L("Imported with Changes"), result.lossy_mappings, 100, true);
 
-    // --- Section 3: Dropped (no equivalent) ---
-    if (!result.dropped_keys.empty())
-        add_section(main_sizer, content, _L("Dropped Settings (No preFlight Equivalent)"), result.dropped_keys, 120);
+        // --- Section 3: Dropped (no equivalent) ---
+        if (!result.dropped_keys.empty())
+            add_section(main_sizer, content, _L("Dropped Settings (No preFlight Equivalent)"), result.dropped_keys,
+                        120);
 
-    // --- Section 4: GCode warnings ---
-    if (!result.gcode_warnings.empty())
-        add_section(main_sizer, content, _L("GCode Warnings"), result.gcode_warnings, 80);
+        // --- Section 4: Unresolved inheritance warnings ---
+        if (!result.unresolved_inheritance.empty())
+        {
+            std::vector<std::string> warnings;
+            for (const auto &parent : result.unresolved_inheritance)
+                warnings.push_back("Parent '" + parent + "' not found - check temperatures and settings");
+            add_section(main_sizer, content, _L("Unresolved Inheritance (Check Settings)"), warnings, 60);
+        }
+
+        // --- Section 5: GCode warnings ---
+        if (!result.gcode_warnings.empty())
+            add_section(main_sizer, content, _L("GCode Warnings"), result.gcode_warnings, 80);
+    }
 
     m_scroll->SetContentSizer(main_sizer);
     outer_sizer->Add(m_scroll, 1, wxEXPAND | wxALL, 5);
@@ -264,6 +281,15 @@ void import_orca_bundle(wxWindow *parent)
 
     auto manifest = OrcaConfigImporter::parse_manifest(manifest_json);
 
+    // Validate the manifest actually contains profiles — a valid ZIP with a corrupt or
+    // unrecognized bundle_structure.json would otherwise silently show an empty options dialog.
+    if (manifest.printer_configs.empty() && manifest.filament_configs.empty() && manifest.process_configs.empty())
+    {
+        show_error(parent, _L("The bundle contains no recognizable profiles. The file may be corrupt or in an "
+                              "unsupported format."));
+        return;
+    }
+
     // Step 4: Show import options dialog
     wxDialog options_dlg(parent, wxID_ANY, _L("Import OrcaSlicer Bundle"), wxDefaultPosition, wxDefaultSize,
                          wxDEFAULT_DIALOG_STYLE);
@@ -329,17 +355,67 @@ void import_orca_bundle(wxWindow *parent)
     }
 
     OrcaConfigImporter importer;
-    auto confirm_overwrite = [parent](const std::string &name) -> int
+    bool overwrite_all = false;
+    bool skip_all = false;
+    auto confirm_overwrite = [parent, &overwrite_all, &skip_all](const std::string &name) -> int
     {
+        if (overwrite_all)
+            return 1;
+        if (skip_all)
+            return 0;
+
+        // preFlight: Custom 4-button dialog for bulk import overwrite decisions
+        enum
+        {
+            ID_YES_TO_ALL = wxID_HIGHEST + 1,
+            ID_NO_TO_ALL
+        };
+
         wxString msg = wxString::Format(_L("A preset named '%s' already exists. Do you want to overwrite it?"),
                                         wxString::FromUTF8(name));
-        MessageDialog dialog(parent, msg, _L("Overwrite Preset?"), wxYES_NO | wxCANCEL | wxICON_QUESTION);
+        wxDialog dialog(parent, wxID_ANY, _L("Overwrite Preset?"), wxDefaultPosition, wxDefaultSize,
+                        wxDEFAULT_DIALOG_STYLE);
+        wxBoxSizer *sizer = new wxBoxSizer(wxVERTICAL);
+        wxBoxSizer *btn_sizer = new wxBoxSizer(wxHORIZONTAL);
+
+        sizer->Add(new wxStaticText(&dialog, wxID_ANY, msg), 0, wxALL, 15);
+
+        btn_sizer->AddStretchSpacer();
+        auto add_btn = [&](wxWindowID id, const wxString &label, bool focus)
+        {
+            wxButton *btn = new wxButton(&dialog, id, label);
+            if (focus)
+            {
+                btn->SetFocus();
+                btn->SetDefault();
+            }
+            btn_sizer->Add(btn, 0, wxLEFT, 5);
+            btn->Bind(wxEVT_BUTTON, [&dialog, id](wxCommandEvent &) { dialog.EndModal(id); });
+        };
+        add_btn(wxID_YES, _L("Yes"), true);
+        add_btn(ID_YES_TO_ALL, _L("Yes to All"), false);
+        add_btn(wxID_NO, _L("No"), false);
+        add_btn(ID_NO_TO_ALL, _L("No to All"), false);
+
+        sizer->Add(btn_sizer, 0, wxEXPAND | wxALL, 10);
+        dialog.SetSizerAndFit(sizer);
+        wxGetApp().UpdateDlgDarkUI(&dialog);
+        dialog.CenterOnParent();
+
         int result = dialog.ShowModal();
         if (result == wxID_YES)
             return 1;
-        if (result == wxID_NO)
+        if (result == ID_YES_TO_ALL)
+        {
+            overwrite_all = true;
+            return 1;
+        }
+        if (result == ID_NO_TO_ALL)
+        {
+            skip_all = true;
             return 0;
-        return -1; // Cancel
+        }
+        return 0; // wxID_NO or close button
     };
 
     OrcaConfigImporter::ImportResult import_result;
@@ -350,15 +426,20 @@ void import_orca_bundle(wxWindow *parent)
     }
     catch (const std::exception &ex)
     {
-        show_error(parent, wxString::FromUTF8(ex.what()));
-        return;
+        // Don't return early — some profiles may have been saved before the exception.
+        // Record the error and fall through to the results dialog so the user can see
+        // exactly what was imported before the failure.
+        import_result.errors.push_back(std::string("Import failed: ") + ex.what());
     }
 
     // Step 6: Rebuild extruder filaments and reload presets into the GUI.
     // The import added new presets to the collections, but ExtruderFilaments
-    // still has the old count. Must resync before load_current_presets iterates them.
+    // still has the old count. Must resync before update_compatible or
+    // load_current_presets iterate them (would crash on out-of-bounds access).
     try
     {
+        wxGetApp().preset_bundle->cache_extruder_filaments_names();
+        wxGetApp().preset_bundle->reset_extruder_filaments();
         wxGetApp().preset_bundle->update_compatible(PresetSelectCompatibleType::Never);
         wxGetApp().load_current_presets();
     }

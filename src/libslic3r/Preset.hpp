@@ -1051,6 +1051,7 @@ public:
     ConstIterator cend() const { return m_extr_filaments.cend(); }
 
     bool empty() const { return m_extr_filaments.empty(); }
+    size_t size() const { return m_extr_filaments.size(); }
 
     const std::deque<Filament> &operator()() const { return m_extr_filaments; }
 

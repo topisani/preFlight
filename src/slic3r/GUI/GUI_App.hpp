@@ -33,6 +33,7 @@ class wxMenuBar;
 class wxTopLevelWindow;
 class wxDataViewCtrl;
 class wxBookCtrlBase;
+class wxTimer;
 struct wxLanguageInfo;
 
 namespace Slic3r
@@ -195,6 +196,8 @@ private:
     std::unique_ptr<PrintHostJobQueue> m_printhost_job_queue;
     std::unique_ptr<OtherInstanceMessageHandler> m_other_instance_message_handler;
     std::unique_ptr<AppUpdater> m_app_updater;
+    wxTimer *m_version_check_timer{nullptr}; // preFlight: periodic version check (every 4 hours)
+    std::string m_version_last_notified;     // preFlight: prevents repeat notifications for same version
     std::unique_ptr<wxSingleInstanceChecker> m_single_instance_checker;
     std::unique_ptr<Downloader> m_downloader;
 

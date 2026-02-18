@@ -402,6 +402,12 @@ public:
     // Set special path end. It will be used to generation of the hyperlink on info page
     void SetPathEnd(const std::string &link);
     void FocusText(bool focus);
+
+private:
+    wxString m_original_text;
+    bool m_wrap_enabled{true};
+    bool m_rewrapping{false};
+    void rewrap();
 };
 
 } // namespace GUI

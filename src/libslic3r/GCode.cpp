@@ -3887,9 +3887,9 @@ std::string GCodeGenerator::extrude_infill_ranges(const std::vector<InfillRange>
     return gcode;
 }
 
-// preFlight: Seam notch ("virtual zipper") — offsets external perimeter path inward at the seam
-// to create a V-shaped channel that hides start/stop blobs. The first inner perimeter gets a
-// compensating outward bump so remaining perimeters are unaffected.
+// preFlight: Nip/Tuck seams - offsets external perimeter path inward at the seam
+// to create a V-shaped channel that hides start/stop blobs. The first inner perimeter gets
+// trimmed to fit the notch so remaining perimeters are unaffected.
 
 // Subdivide segments in a SmoothPath region to ensure no segment exceeds max_len (scaled).
 // Operates on the path in-place. Returns the number of points inserted.
@@ -4715,6 +4715,10 @@ std::string GCodeGenerator::_extrude(const ExtrusionAttributes &path_attr, const
     };
     std::vector<std::vector<BoundaryCrossing>> segment_boundary_crossings;
 
+    // Per-segment bridge zone detection — for slowing solid infill over bridges
+    std::vector<bool> segment_over_bridge; // Per-segment: true if any sampled point is over bridge zone
+    double over_bridge_speed_value = 0;    // Pre-computed over_bridge_speed (mm/s), 0 if disabled
+
     float base_width = path_attr.width;
     float base_height = path_attr.height;
 
@@ -5044,6 +5048,66 @@ std::string GCodeGenerator::_extrude(const ExtrusionAttributes &path_attr, const
         }
     }
 
+    // Bridge zone detection for over-bridge speed adjustment
+    // For SolidInfill and TopSolidInfill, detect segments above bridge zones on the layer below
+    // and apply over_bridge_speed to segments that pass over bridge areas.
+    // Short segments (< 8mm): check start, midpoint, end.
+    // Long segments (>= 8mm): sample every 4mm along the segment.
+    // Breaks on first bridge hit per segment — no need to check remaining sample points.
+    if ((path_attr.role == ExtrusionRole::SolidInfill || path_attr.role == ExtrusionRole::TopSolidInfill) &&
+        m_layer != nullptr && m_layer->lower_layer != nullptr && !path.empty())
+    {
+        const double solid_infill_speed = m_config.get_abs_value("solid_infill_speed");
+        const double obs = m_config.get_abs_value("over_bridge_speed", solid_infill_speed);
+        if (obs > 0)
+        {
+            const Layer::RoleIndex &index_below = m_layer->get_role_index_for_layer(m_layer->lower_layer);
+            if (index_below.has_bridge_zone())
+            {
+                over_bridge_speed_value = obs;
+                const ExPolygons &zone = index_below.bridge_zone;
+                segment_over_bridge.resize(path.size(), false);
+
+                Point current_point = this->last_position ? *this->last_position : path.front().point;
+
+                for (size_t i = 0; i < path.size(); ++i)
+                {
+                    const Point &end_point = path[i].point;
+                    const Vec2d dir = (end_point - current_point).cast<double>();
+                    const double seg_len = dir.norm();
+
+                    if (seg_len < scale_(8.0))
+                    {
+                        // Short segment (< 8mm): check start, midpoint, end
+                        const Point mid((current_point.x() + end_point.x()) / 2,
+                                        (current_point.y() + end_point.y()) / 2);
+                        segment_over_bridge[i] = Geometry::contains(zone, current_point) ||
+                                                 Geometry::contains(zone, mid) || Geometry::contains(zone, end_point);
+                    }
+                    else
+                    {
+                        // Long segment (>= 8mm): sample every 4mm, break on first hit
+                        const int num_steps = (int) std::ceil(seg_len / scale_(4.0));
+                        const Vec2d start_d = current_point.cast<double>();
+                        for (int s = 0; s <= num_steps; ++s)
+                        {
+                            const double t = (double) s / num_steps;
+                            const Point pt((coord_t) (start_d.x() + t * dir.x()),
+                                           (coord_t) (start_d.y() + t * dir.y()));
+                            if (Geometry::contains(zone, pt))
+                            {
+                                segment_over_bridge[i] = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    current_point = end_point;
+                }
+            }
+        }
+    }
+
     // set speed
     if (speed == -1)
     {
@@ -5241,6 +5305,9 @@ std::string GCodeGenerator::_extrude(const ExtrusionAttributes &path_attr, const
         double initial_speed_factor = 1.0 / segment_flow_multipliers[1];
         F = std::round(speed * 60.0 * initial_speed_factor);
     }
+    // If the first emitted segment is over a bridge zone, use over_bridge_speed from the start
+    if (over_bridge_speed_value > 0 && segment_over_bridge.size() > 1 && segment_over_bridge[1])
+        F = std::round(over_bridge_speed_value * 60.0);
     gcode += m_writer.set_speed(F, "", cooling_marker_setspeed_comments);
 
     if (dynamic_print_and_fan_speeds.fan_speed >= 0 && !EXTRUDER_CONFIG(enable_manual_fan_speeds))
@@ -5547,6 +5614,30 @@ std::string GCodeGenerator::_extrude(const ExtrusionAttributes &path_attr, const
                     else
                     {
                         // No boundary crossing - emit single segment as before
+
+                        // Apply over-bridge speed for segments fully inside bridge zone
+                        if (over_bridge_speed_value > 0 && !segment_over_bridge.empty() &&
+                            dest_index < segment_over_bridge.size() && segment_over_bridge[dest_index])
+                        {
+                            double bridge_F = std::round(over_bridge_speed_value * 60.0);
+                            if (std::abs(F - bridge_F) > 0.1)
+                            {
+                                gcode += m_writer.set_speed(bridge_F, "", "");
+                                F = bridge_F;
+                            }
+                        }
+                        else if (over_bridge_speed_value > 0 && !segment_over_bridge.empty() &&
+                                 dest_index < segment_over_bridge.size() && !segment_over_bridge[dest_index])
+                        {
+                            // Segment left bridge zone (no crossing detected) — restore original speed
+                            double original_F = std::round(speed * 60.0);
+                            if (std::abs(F - original_F) > 0.1)
+                            {
+                                gcode += m_writer.set_speed(original_F, "", "");
+                                F = original_F;
+                            }
+                        }
+
                         double extrusion_amount{segment_e_per_mm * line_length * it->e_fraction};
                         if (it->height_fraction < 1.0 || std::prev(it)->height_fraction < 1.0)
                         {

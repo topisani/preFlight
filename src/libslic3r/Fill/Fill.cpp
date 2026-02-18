@@ -1018,6 +1018,22 @@ void Layer::make_fills(FillAdaptive::Octree *adaptive_fill_octree, FillAdaptive:
                     }
                 }
 
+                // preFlight: Also collect stInternalVoid surfaces for interlocking on combined-infill layers.
+                // combine_infill() converts stInternal to stInternalVoid on intermediate (void) layers,
+                // but stInternalVoid is excluded from surface_fills (group_fills skips it). Without this,
+                // void layers have no sparse_regions and generate no interlocking perimeters at all.
+                // Interlocking perimeters are structural (like regular perimeters) and must be printed
+                // on every layer regardless of infill combination.
+                for (const Surface &surface : layerm->fill_surfaces())
+                {
+                    if (surface.surface_type == stInternalVoid)
+                    {
+                        ExPolygons island_void = intersection_ex(ExPolygons{surface.expolygon},
+                                                                 ExPolygons{island.boundary});
+                        append(sparse_regions, island_void);
+                    }
+                }
+
                 // Bridge infill (stInternalBridge) should be subtracted from sparse to avoid overlaps.
                 // Bridge support anchors (stInternalSolid created by bridge_over_infill) are NOT created when interlocking
                 // is enabled, so we don't need to worry about them here.
@@ -1026,7 +1042,7 @@ void Layer::make_fills(FillAdaptive::Octree *adaptive_fill_octree, FillAdaptive:
                     sparse_regions = diff_ex(sparse_regions, solid_regions);
                 }
 
-                // Surface extraction complete - sparse_regions contains only stInternal (sparse infill) for THIS island
+                // Surface extraction complete - sparse_regions contains stInternal + stInternalVoid (sparse infill) for THIS island
                 // All other surface types (stInternalSolid, stInternalBridge, stTop, stBottom) are preserved
 
                 // group_fills() can fragment sparse regions via diff_ex() when subtracting solid surfaces (e.g., top layer transition beads).
@@ -1245,10 +1261,10 @@ void Layer::make_fills(FillAdaptive::Octree *adaptive_fill_octree, FillAdaptive:
                 // Position first shell with visual outer edge at sparse boundary (center at half_width).
                 // No overlap from interlocking side - let the perimeter's built-in overlap do the bonding.
                 const coord_t first_shell_offset = half_width;
-                const coord_t gapped_spacing = coord_t(perimeter_scaled_width *
-                                                       (2.0 - INTERLOCKING_OVERLAP_FRACTION)); // -100% overlap (full gap)
-                const coord_t adjacent_spacing = coord_t(perimeter_scaled_width *
-                                                         (1.0 - INTERLOCKING_OVERLAP_FRACTION)); // 0% overlap (touching)
+                const coord_t gapped_spacing = coord_t(
+                    perimeter_scaled_width * (2.0 - INTERLOCKING_OVERLAP_FRACTION)); // -100% overlap (full gap)
+                const coord_t adjacent_spacing = coord_t(
+                    perimeter_scaled_width * (1.0 - INTERLOCKING_OVERLAP_FRACTION)); // 0% overlap (touching)
 
                 // Build list of (step_offset, flow_ratio) for each shell
                 // step_offset is INCREMENTAL (from previous shell), not cumulative

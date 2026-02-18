@@ -2037,10 +2037,16 @@ void GLCanvas3D::render()
                         std::max(10u, (unsigned int) cnv_size.get_height()));
     camera.apply_viewport();
 
+    // Update ImGui display size and font scaling whenever canvas size changes.
+    // _resize() has an internal guard (m_old_size == new_size) so this is a no-op
+    // on frames where the size hasn't changed. This is needed because DPI changes
+    // (e.g. dragging across monitors) resize the canvas but _resize() was previously
+    // only called from zoom-to-bed, leaving ImGui with stale display size and fonts.
+    _resize((unsigned int) cnv_size.get_width(), (unsigned int) cnv_size.get_height());
+
     if (camera.requires_zoom_to_bed)
     {
         zoom_to_bed();
-        _resize((unsigned int) cnv_size.get_width(), (unsigned int) cnv_size.get_height());
         camera.requires_zoom_to_bed = false;
     }
 

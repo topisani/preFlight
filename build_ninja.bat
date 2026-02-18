@@ -84,8 +84,8 @@ IF %ERRORLEVEL% NEQ 0 (
 
 REM Build
 echo.
-echo ** Building with Ninja (24 parallel jobs)...
-ninja -j 24
+echo ** Building with Ninja (16 parallel jobs)...
+ninja -j 16
 IF %ERRORLEVEL% NEQ 0 (
     echo ERROR: Build failed.
     exit /b 1

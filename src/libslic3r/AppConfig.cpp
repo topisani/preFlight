@@ -229,7 +229,7 @@ void AppConfig::set_defaults()
         set("show_estimated_times_in_dbl_slider", "1");
 
     if (get("show_ruler_in_dbl_slider").empty())
-        set("show_ruler_in_dbl_slider", "0");
+        set("show_ruler_in_dbl_slider", "1");
 
     if (get("show_ruler_bg_in_dbl_slider").empty())
         set("show_ruler_bg_in_dbl_slider", "1");

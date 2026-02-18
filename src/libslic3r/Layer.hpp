@@ -690,6 +690,11 @@ public:
         ExPolygons interlocking_zone;
         bool has_interlocking_zone() const { return !interlocking_zone.empty(); }
 
+        // Expanded bridge surfaces (stBottomBridge + stInternalBridge) on this layer.
+        // Queried by the layer above to apply over_bridge_speed to solid infill segments.
+        ExPolygons bridge_zone;
+        bool has_bridge_zone() const { return !bridge_zone.empty(); }
+
         // Search radius for expanded point queries (2.5x perimeter width)
         // Needed for interlocking perimeters which have gaps from -100% overlap
         coord_t search_radius = scale_(1.0); // Default 1mm, calculated in build_from_layer

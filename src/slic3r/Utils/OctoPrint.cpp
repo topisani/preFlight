@@ -339,6 +339,22 @@ wxString OctoPrint::get_test_failed_msg(wxString &msg) const
                              _L("Note: OctoPrint version at least 1.1.0 is required."));
 }
 
+// preFlight: Check if file already exists on OctoPrint before uploading
+bool OctoPrint::file_exists(const boost::filesystem::path &upload_path, wxString &error) const
+{
+    bool exists = false;
+    auto url = make_url((boost::format("api/files/local/%1%") % upload_path.string()).str());
+
+    auto http = Http::get(std::move(url));
+    set_auth(http);
+    http.ssl_revoke_best_effort(m_ssl_revoke_best_effort)
+        .on_complete([&](std::string, unsigned) { exists = true; })
+        .on_error([&](std::string, std::string, unsigned) { exists = false; })
+        .perform_sync();
+
+    return exists;
+}
+
 bool OctoPrint::upload(PrintHostUpload upload_data, ProgressFn prorgess_fn, ErrorFn error_fn, InfoFn info_fn) const
 {
 #ifndef WIN32

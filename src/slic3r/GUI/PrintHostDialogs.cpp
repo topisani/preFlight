@@ -30,6 +30,7 @@
 #include "MsgDialog.hpp"
 #include "I18N.hpp"
 #include "MainFrame.hpp"
+#include "ModernTabBar.hpp"
 #include "libslic3r/AppConfig.hpp"
 #include "NotificationManager.hpp"
 #include "ExtraRenderers.hpp"
@@ -541,10 +542,43 @@ void PrintHostQueueDialog::on_progress(Event &evt)
         set_state(evt.job_id, ST_PROGRESS);
         job_list->SetValue(wxVariant(evt.progress), evt.job_id, COL_PROGRESS);
     }
-    else
+    else if (get_state(evt.job_id) != ST_COMPLETED)
     {
         set_state(evt.job_id, ST_COMPLETED);
         job_list->SetValue(wxVariant(100), evt.job_id, COL_PROGRESS);
+
+        // preFlight: Offer to switch to the Printer tab if available and not already viewing it
+        MainFrame *mainframe = wxGetApp().mainframe;
+        if (mainframe && mainframe->get_printer_webview_tab_added() && mainframe->m_modern_tabbar &&
+            !mainframe->m_modern_tabbar->IsSelected(ModernTabBar::TAB_PRINTER_WEBVIEW))
+        {
+            std::string pref = wxGetApp().app_config->has("switch_to_printer_tab_after_upload")
+                                   ? wxGetApp().app_config->get("switch_to_printer_tab_after_upload")
+                                   : "ask";
+
+            if (pref == "always")
+            {
+                mainframe->m_modern_tabbar->SelectPrinterWebViewTab();
+            }
+            else if (pref != "never")
+            {
+                RichMessageDialogBase dlg(this, _L("Upload complete. Would you like to switch to the Printer tab?"),
+                                          _L("Upload Complete"), wxYES_NO | wxICON_QUESTION);
+                dlg.ShowCheckBox(_L("Remember my choice"));
+
+                if (dlg.ShowModal() == wxID_YES)
+                {
+                    mainframe->m_modern_tabbar->SelectPrinterWebViewTab();
+                    if (dlg.IsCheckBoxChecked())
+                        wxGetApp().app_config->set("switch_to_printer_tab_after_upload", "always");
+                }
+                else
+                {
+                    if (dlg.IsCheckBoxChecked())
+                        wxGetApp().app_config->set("switch_to_printer_tab_after_upload", "never");
+                }
+            }
+        }
     }
 
     on_list_select();

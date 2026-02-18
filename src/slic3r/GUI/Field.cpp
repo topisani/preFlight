@@ -651,15 +651,54 @@ void TextCtrl::BUILD()
                            propagate_value();
                    }),
                temp->GetId());
-    /*
-	// select all text using Ctrl+A
-	temp->Bind(wxEVT_CHAR, ([temp](wxKeyEvent& event)
-	{
-		if (wxGetKeyState(wxKeyCode('A')) && wxGetKeyState(WXK_CONTROL))
-			temp->SetSelection(-1, -1); //select all
-		event.Skip();
-	}));
-*/
+
+    // preFlight: For multiline fields (G-code editors etc.), dismiss tooltips on the internal
+    // text control when the user clicks or starts typing. The existing LEFT_DOWN handler above
+    // only catches clicks on the TextInput container, not on the child text control itself.
+    if (m_opt.multiline)
+    {
+        if (auto *tc = temp->GetTextCtrl())
+        {
+            auto dismiss_tooltips = [temp, tc]()
+            {
+                bool flag = false;
+#ifdef __WXGTK__
+                flag = true;
+#endif
+                if (temp->GetToolTip())
+                    temp->GetToolTip()->Enable(flag);
+                if (tc->GetToolTip())
+                    tc->GetToolTip()->Enable(flag);
+            };
+
+            tc->Bind(wxEVT_LEFT_DOWN,
+                     [dismiss_tooltips](wxMouseEvent &event)
+                     {
+                         event.Skip();
+                         dismiss_tooltips();
+                     });
+
+            tc->Bind(wxEVT_KEY_DOWN,
+                     [dismiss_tooltips](wxKeyEvent &event)
+                     {
+                         event.Skip();
+                         dismiss_tooltips();
+                     });
+
+            tc->Bind(wxEVT_KILL_FOCUS,
+                     [this, temp, tc](wxFocusEvent &e)
+                     {
+                         e.Skip();
+#if !defined(__WXGTK__)
+                         if (temp->GetToolTip())
+                             temp->GetToolTip()->Enable(true);
+                         if (tc->GetToolTip())
+                             tc->GetToolTip()->Enable(true);
+#endif
+                     });
+        }
+    }
+
     // recast as a wxWindow to fit the calling convention
     window = dynamic_cast<wxWindow *>(temp);
 }

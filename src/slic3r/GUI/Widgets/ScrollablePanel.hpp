@@ -44,6 +44,9 @@ public:
     // Update scrollbar after content changes
     void UpdateScrollbar();
 
+    // Override the scrollbar track background color (default comes from UIColors)
+    void SetTrackColour(const wxColour &colour);
+
     // Theme change handler
     void sys_color_changed();
 

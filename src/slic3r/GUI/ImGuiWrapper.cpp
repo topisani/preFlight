@@ -1320,7 +1320,7 @@ void ImGuiWrapper::init_font(bool compress)
 
     // Load a second font at the legend sidebar's native pixel size (11pt) for crisp rendering
     m_legend_font = io.Fonts->AddFontFromFileTTF((Slic3r::resources_dir() + "/fonts/" + "NotoSans-Regular.ttf").c_str(),
-                                                  m_legend_font_size, nullptr, ranges.Data);
+                                                 m_legend_font_size, nullptr, ranges.Data);
     if (s_font_cjk)
     {
         ImFontConfig config;

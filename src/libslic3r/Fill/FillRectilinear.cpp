@@ -153,6 +153,10 @@ struct SegmentIntersection
 
     coord_t pos() const
     {
+        // preFlight: Guard against division by zero from degenerate/out-of-bounds intersections.
+        assert(pos_q > 0);
+        if (pos_q == 0)
+            return coord_t(pos_p);
         // Division rounds both positive and negative down to zero.
         // Add half of q for an arithmetic rounding effect.
         int64_t p = pos_p;
@@ -3431,9 +3435,19 @@ static void polylines_from_paths(const std::vector<MonotonicRegionLink> &path,
             {
                 // Finish the current vertical line,
                 assert(ip_prev->is_inner());
-                ip_prev->is_low() ? --ip_prev : ++ip_prev;
-                assert(ip_prev->is_outer());
-                polyline->points.back() = Point(vline_prev.pos, ip_prev->pos());
+                // preFlight: Guard against out-of-bounds pointer move. Degenerate geometry
+                // from combine_infill() slivers or other edge cases can violate the expected
+                // OUTER-INNER-INNER-OUTER intersection ordering, causing pos_q == 0 crash.
+                const size_t ip_prev_idx = ip_prev - vline_prev.intersections.data();
+                const bool can_move = ip_prev->is_inner() &&
+                                      (ip_prev->is_low() ? ip_prev_idx > 0
+                                                         : ip_prev_idx + 1 < vline_prev.intersections.size());
+                if (can_move)
+                {
+                    ip_prev->is_low() ? --ip_prev : ++ip_prev;
+                    assert(ip_prev->is_outer());
+                    polyline->points.back() = Point(vline_prev.pos, ip_prev->pos());
+                }
                 finish_polyline();
             }
         }
@@ -3633,9 +3647,15 @@ static void polylines_from_paths(const std::vector<MonotonicRegionLink> &path,
         const SegmentedIntersectionLine &vline = segs[region.right.vline];
         const SegmentIntersection *ip = &vline.intersections[region.right_intersection_point(path.back().flipped)];
         assert(ip->is_inner());
-        ip->is_low() ? --ip : ++ip;
-        assert(ip->is_outer());
-        polyline->points.back() = Point(vline.pos, ip->pos());
+        // preFlight: Same bounds guard as above — degenerate geometry can violate intersection ordering.
+        const size_t ip_idx = ip - vline.intersections.data();
+        const bool can_move = ip->is_inner() && (ip->is_low() ? ip_idx > 0 : ip_idx + 1 < vline.intersections.size());
+        if (can_move)
+        {
+            ip->is_low() ? --ip : ++ip;
+            assert(ip->is_outer());
+            polyline->points.back() = Point(vline.pos, ip->pos());
+        }
         finish_polyline();
     }
 }

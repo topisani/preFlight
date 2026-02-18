@@ -146,7 +146,8 @@ PresetBundle &PresetBundle::operator=(const PresetBundle &rhs)
             extruders_filaments.emplace_back(
                 ExtruderFilaments(&filaments, i, rhs_filaments.get_selected_preset_name()));
             ExtruderFilaments &this_filaments = extruders_filaments[i];
-            for (size_t preset_id = 0; preset_id < this_filaments.m_filaments->size(); preset_id++)
+            const size_t compat_count = std::min(this_filaments.size(), rhs_filaments.size());
+            for (size_t preset_id = 0; preset_id < compat_count; preset_id++)
                 this_filaments.filament(preset_id).is_compatible = rhs_filaments.filament(preset_id).is_compatible;
             i++;
         }

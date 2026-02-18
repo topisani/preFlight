@@ -831,7 +831,27 @@ void GUI_App::post_init()
             });
     }
 
-    CallAfter([this] { this->app_version_check(false); });
+    CallAfter(
+        [this]
+        {
+            this->app_version_check(false);
+
+            // preFlight: start periodic version check (every 4 hours) if user allows notifications
+            std::string notify_opt = app_config->get("notify_release");
+            if (notify_opt == "all" || notify_opt == "release")
+            {
+                m_version_check_timer = new wxTimer();
+                m_version_check_timer->Bind(wxEVT_TIMER,
+                                            [this](wxTimerEvent &)
+                                            {
+                                                // Re-check setting in case user changed it mid-session
+                                                std::string opt = app_config->get("notify_release");
+                                                if (opt == "all" || opt == "release")
+                                                    this->app_version_check(false);
+                                            });
+                m_version_check_timer->Start(4 * 3600 * 1000); // 4 hours in milliseconds
+            }
+        });
 
     // Set preFlight version and save to preFlight.ini or preFlightGcodeViewer.ini.
     app_config->set("version", SLIC3R_VERSION);
@@ -861,6 +881,14 @@ GUI_App::GUI_App(EAppMode mode)
 
 GUI_App::~GUI_App()
 {
+    // preFlight: stop periodic version check timer
+    if (m_version_check_timer)
+    {
+        m_version_check_timer->Stop();
+        delete m_version_check_timer;
+        m_version_check_timer = nullptr;
+    }
+
     delete app_config;
     delete preset_bundle;
 }
@@ -4427,18 +4455,28 @@ void GUI_App::on_version_read(wxCommandEvent &evt)
         }
         return;
     }
-    // notification
-    /*
-    this->plater_->get_notification_manager()->push_notification(NotificationType::NewAppAvailable
-        , NotificationManager::NotificationLevel::ImportantNotificationLevel
-        , Slic3r::format(_u8L("New release version %1% is available."), evt.GetString())
-        , _u8L("See Download page.")
-        , [](wxEvtHandler* evnthndlr) {wxGetApp().open_web_page_localized("https://github.com/oozebot/preFlight"); return true; }
-    );
-    */
-    // updater
-    // read triggered_by_user that was set when calling  GUI_App::app_version_check
-    app_updater(m_app_updater->get_triggered_by_user());
+    // preFlight: user-triggered checks get the full modal dialog; automatic/periodic
+    // checks get a non-intrusive toast notification (de-duplicated per version)
+    if (m_app_updater->get_triggered_by_user())
+    {
+        app_updater(true);
+    }
+    else
+    {
+        std::string online_ver = into_u8(evt.GetString());
+        if (online_ver != m_version_last_notified)
+        {
+            m_version_last_notified = online_ver;
+            this->plater_->get_notification_manager()->push_notification(
+                NotificationType::NewAppAvailable, NotificationManager::NotificationLevel::ImportantNotificationLevel,
+                Slic3r::format(_u8L("New version %1% is available."), online_ver), _u8L("Download"),
+                [](wxEvtHandler *)
+                {
+                    wxGetApp().app_updater(false);
+                    return true;
+                });
+        }
+    }
 }
 
 void GUI_App::app_updater(bool from_user)
@@ -4465,6 +4503,13 @@ void GUI_App::app_updater(bool from_user)
     if (dialog.disable_version_check())
     {
         app_config->set("notify_release", "none");
+        // preFlight: stop periodic version checks since user opted out
+        if (m_version_check_timer)
+        {
+            m_version_check_timer->Stop();
+            delete m_version_check_timer;
+            m_version_check_timer = nullptr;
+        }
     }
     // Doesn't wish to update
     if (dialog_result != wxID_OK)

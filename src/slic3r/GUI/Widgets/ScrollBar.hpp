@@ -7,13 +7,14 @@
 
 #include <wx/panel.h>
 
-// Custom vertical scrollbar widget with preFlight warm theme colors
+// Custom scrollbar widget with preFlight warm theme colors
 // Replaces native Windows scrollbars for consistent dark mode appearance
+// Supports both vertical (default) and horizontal orientation
 class ScrollBar : public wxPanel
 {
 public:
     ScrollBar(wxWindow *parent, wxWindowID id = wxID_ANY, const wxPoint &pos = wxDefaultPosition,
-              const wxSize &size = wxDefaultSize);
+              const wxSize &size = wxDefaultSize, int orientation = wxVERTICAL);
 
     // Set scroll parameters (like wxScrollBar)
     // position: current scroll position
@@ -29,6 +30,13 @@ public:
     int GetRange() const { return m_range; }
     int GetPageSize() const { return m_pageSize; }
 
+    // Override the default background color (which comes from UIColors)
+    void SetTrackColour(const wxColour &colour)
+    {
+        m_trackColour = colour;
+        Refresh();
+    }
+
     void sys_color_changed() { Refresh(); }
     void msw_rescale();
 
@@ -41,21 +49,27 @@ private:
     void OnSize(wxSizeEvent &event);
     void OnMouseCaptureLost(wxMouseCaptureLostEvent &event);
 
-    int PositionFromY(int y) const;
-    int YFromPosition() const;
+    int PositionFromCoord(int coord) const;
+    int CoordFromPosition() const;
     int ThumbPixelSize() const;
     wxRect GetThumbRect() const;
     wxRect GetTrackRect() const;
 
     void NotifyScroll(wxEventType eventType);
 
-    int m_position;  // Current scroll position
-    int m_thumbSize; // Size of visible area
-    int m_range;     // Total scrollable range
-    int m_pageSize;  // Page scroll amount
+    // Axis helpers: return the primary/secondary axis value depending on orientation
+    int PrimaryCoord(const wxPoint &p) const { return m_orientation == wxVERTICAL ? p.y : p.x; }
+    int PrimarySize(const wxSize &s) const { return m_orientation == wxVERTICAL ? s.y : s.x; }
+
+    wxColour m_trackColour; // Optional override for track background (invalid = use UIColors default)
+    int m_orientation;      // wxVERTICAL or wxHORIZONTAL
+    int m_position;         // Current scroll position
+    int m_thumbSize;        // Size of visible area
+    int m_range;            // Total scrollable range
+    int m_pageSize;         // Page scroll amount
 
     bool m_dragging;
-    int m_dragStartY;
+    int m_dragStartCoord;
     int m_dragStartPos;
 
     // DPI scaling - these are now methods instead of constants

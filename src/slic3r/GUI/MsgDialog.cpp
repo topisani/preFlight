@@ -21,6 +21,7 @@
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/Color.hpp"
 #include "GUI.hpp"
+#include "Widgets/ScrollBar.hpp"
 #include "format.hpp"
 #include "I18N.hpp"
 #include "ConfigWizard.hpp"
@@ -30,10 +31,29 @@
 
 #include "Widgets/CheckBox.hpp"
 
+#ifdef _WIN32
+#include <commctrl.h>
+#endif
+
 namespace Slic3r
 {
 namespace GUI
 {
+
+#ifdef _WIN32
+// preFlight: Subclass proc to hide native scrollbars on wxHtmlWindow.
+// Reclaims all non-client area so scrollbars have zero rendering space,
+// while WS_VSCROLL/WS_HSCROLL stay active for virtual size calculation.
+static LRESULT CALLBACK HideNativeScrollbarProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+                                                UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+    if (uMsg == WM_NCCALCSIZE)
+        return 0;
+    if (uMsg == WM_NCDESTROY)
+        RemoveWindowSubclass(hWnd, HideNativeScrollbarProc, uIdSubclass);
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+#endif
 
 // DPI-scaled layout methods
 int MsgDialog::GetScaledBorder()
@@ -153,13 +173,43 @@ void MsgDialog::finalize()
 {
     wxGetApp().UpdateDlgDarkUI(this);
     Fit();
-    this->CenterOnParent();
+
+    // preFlight: Center on the main application window if our parent isn't visible
+    // (e.g. dialogs spawned from hidden queue dialogs would otherwise center on the monitor)
+    wxWindow *parent = GetParent();
+    if (parent && parent->IsShownOnScreen())
+    {
+        this->CenterOnParent();
+    }
+    else if (wxGetApp().mainframe && wxGetApp().mainframe->IsShownOnScreen())
+    {
+        wxPoint frame_pos = wxGetApp().mainframe->GetPosition();
+        wxSize frame_size = wxGetApp().mainframe->GetSize();
+        wxSize dlg_size = this->GetSize();
+        this->SetPosition(
+            wxPoint(frame_pos.x + (frame_size.x - dlg_size.x) / 2, frame_pos.y + (frame_size.y - dlg_size.y) / 2));
+    }
+    else
+    {
+        this->CenterOnScreen();
+    }
 }
 
 // Text shown as HTML, so that mouse selection and Ctrl-V to copy will work.
 static void add_msg_content(MsgDialog *parent, wxBoxSizer *content_sizer, const HtmlContent &content)
 {
+    // wxHW_SCROLLBAR_AUTO is required — wxHW_SCROLLBAR_NEVER prevents wxHtmlWindow from calculating
+    // virtual size entirely (virt == client), making custom scrollbar sync impossible.
+    // On Windows, native scrollbars are hidden after the fact (see below).
     wxHtmlWindow *html = new wxHtmlWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHW_SCROLLBAR_AUTO);
+
+#ifdef _WIN32
+    // preFlight: Hide native scrollbars — the subclass reclaims non-client area so native
+    // scrollbars have zero rendering space, but scroll infrastructure stays active for
+    // virtual size, ppu, and scroll position used by the custom ScrollBar widgets.
+    SetWindowSubclass((HWND) html->GetHandle(), HideNativeScrollbarProc, 1, 0);
+    SetWindowPos((HWND) html->GetHandle(), NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+#endif
 
     // count lines in the message
     int msg_lines = 0;
@@ -260,7 +310,170 @@ static void add_msg_content(MsgDialog *parent, wxBoxSizer *content_sizer, const 
                    event.Skip(false);
                });
 
+#ifdef _WIN32
+    // preFlight: Custom themed ScrollBar widgets (native scrollbars hidden via WM_NCCALCSIZE above).
+    // Track color uses ScrollBar's built-in UIColors default (matches UpdateDarkUI theming).
+    ScrollBar *vscroll = new ScrollBar(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL);
+    ScrollBar *hscroll = new ScrollBar(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHORIZONTAL);
+
+    // Layout: html + vertical scrollbar on top, horizontal scrollbar below
+    wxBoxSizer *row_sizer = new wxBoxSizer(wxHORIZONTAL);
+    row_sizer->Add(html, 1, wxEXPAND);
+    row_sizer->Add(vscroll, 0, wxEXPAND);
+    content_sizer->Add(row_sizer, 1, wxEXPAND);
+    content_sizer->Add(hscroll, 0, wxEXPAND);
+
+    // Sync both custom scrollbars with html window scroll state
+    auto sync_scrollbars = [html, vscroll, hscroll]()
+    {
+        int vw, vh;
+        html->GetVirtualSize(&vw, &vh);
+        wxSize client = html->GetClientSize();
+        int ppuX, ppuY;
+        html->GetScrollPixelsPerUnit(&ppuX, &ppuY);
+        if (ppuX <= 0)
+            ppuX = 1;
+        if (ppuY <= 0)
+            ppuY = 1;
+        int startX, startY;
+        html->GetViewStart(&startX, &startY);
+
+        // Check overflow in pixels (avoids rounding errors from scroll-unit conversion)
+        bool needsV = vh > client.y;
+        bool needsH = vw > client.x;
+
+        // Vertical
+        if (needsV)
+        {
+            int vtotal = (vh + ppuY - 1) / ppuY;
+            int vvisible = client.y / ppuY;
+            vscroll->SetScrollbar(startY, vvisible, vtotal, vvisible);
+        }
+        vscroll->Show(needsV);
+
+        // Horizontal
+        if (needsH)
+        {
+            int htotal = (vw + ppuX - 1) / ppuX;
+            int hvisible = client.x / ppuX;
+            hscroll->SetScrollbar(startX, hvisible, htotal, hvisible);
+        }
+        hscroll->Show(needsH);
+    };
+
+    // Vertical scrollbar drag → scroll the html window
+    vscroll->Bind(wxEVT_SCROLL_THUMBTRACK, [html](wxScrollEvent &e) { html->Scroll(-1, e.GetPosition()); });
+    vscroll->Bind(wxEVT_SCROLL_LINEUP,
+                  [html, sync_scrollbars](wxScrollEvent &)
+                  {
+                      int x, y;
+                      html->GetViewStart(&x, &y);
+                      html->Scroll(-1, std::max(0, y - 1));
+                      sync_scrollbars();
+                  });
+    vscroll->Bind(wxEVT_SCROLL_LINEDOWN,
+                  [html, sync_scrollbars](wxScrollEvent &)
+                  {
+                      int x, y;
+                      html->GetViewStart(&x, &y);
+                      html->Scroll(-1, y + 1);
+                      sync_scrollbars();
+                  });
+    vscroll->Bind(wxEVT_SCROLL_PAGEUP,
+                  [html, sync_scrollbars](wxScrollEvent &)
+                  {
+                      int x, y;
+                      html->GetViewStart(&x, &y);
+                      int ppuX, ppuY;
+                      html->GetScrollPixelsPerUnit(&ppuX, &ppuY);
+                      int page = ppuY > 0 ? html->GetClientSize().y / ppuY : 1;
+                      html->Scroll(-1, std::max(0, y - page));
+                      sync_scrollbars();
+                  });
+    vscroll->Bind(wxEVT_SCROLL_PAGEDOWN,
+                  [html, sync_scrollbars](wxScrollEvent &)
+                  {
+                      int x, y;
+                      html->GetViewStart(&x, &y);
+                      int ppuX, ppuY;
+                      html->GetScrollPixelsPerUnit(&ppuX, &ppuY);
+                      int page = ppuY > 0 ? html->GetClientSize().y / ppuY : 1;
+                      html->Scroll(-1, y + page);
+                      sync_scrollbars();
+                  });
+
+    // Horizontal scrollbar drag → scroll the html window
+    hscroll->Bind(wxEVT_SCROLL_THUMBTRACK, [html](wxScrollEvent &e) { html->Scroll(e.GetPosition(), -1); });
+    hscroll->Bind(wxEVT_SCROLL_LINEUP,
+                  [html, sync_scrollbars](wxScrollEvent &)
+                  {
+                      int x, y;
+                      html->GetViewStart(&x, &y);
+                      html->Scroll(std::max(0, x - 1), -1);
+                      sync_scrollbars();
+                  });
+    hscroll->Bind(wxEVT_SCROLL_LINEDOWN,
+                  [html, sync_scrollbars](wxScrollEvent &)
+                  {
+                      int x, y;
+                      html->GetViewStart(&x, &y);
+                      html->Scroll(x + 1, -1);
+                      sync_scrollbars();
+                  });
+    hscroll->Bind(wxEVT_SCROLL_PAGEUP,
+                  [html, sync_scrollbars](wxScrollEvent &)
+                  {
+                      int x, y;
+                      html->GetViewStart(&x, &y);
+                      int ppuX, ppuY;
+                      html->GetScrollPixelsPerUnit(&ppuX, &ppuY);
+                      int page = ppuX > 0 ? html->GetClientSize().x / ppuX : 1;
+                      html->Scroll(std::max(0, x - page), -1);
+                      sync_scrollbars();
+                  });
+    hscroll->Bind(wxEVT_SCROLL_PAGEDOWN,
+                  [html, sync_scrollbars](wxScrollEvent &)
+                  {
+                      int x, y;
+                      html->GetViewStart(&x, &y);
+                      int ppuX, ppuY;
+                      html->GetScrollPixelsPerUnit(&ppuX, &ppuY);
+                      int page = ppuX > 0 ? html->GetClientSize().x / ppuX : 1;
+                      html->Scroll(x + page, -1);
+                      sync_scrollbars();
+                  });
+
+    // Sync on any scroll/resize event from the html window
+    auto on_scroll = [sync_scrollbars](wxScrollWinEvent &e)
+    {
+        e.Skip();
+        sync_scrollbars();
+    };
+    html->Bind(wxEVT_SCROLLWIN_THUMBTRACK, on_scroll);
+    html->Bind(wxEVT_SCROLLWIN_THUMBRELEASE, on_scroll);
+    html->Bind(wxEVT_SCROLLWIN_LINEDOWN, on_scroll);
+    html->Bind(wxEVT_SCROLLWIN_LINEUP, on_scroll);
+    html->Bind(wxEVT_SCROLLWIN_PAGEDOWN, on_scroll);
+    html->Bind(wxEVT_SCROLLWIN_PAGEUP, on_scroll);
+    html->Bind(wxEVT_MOUSEWHEEL,
+               [sync_scrollbars](wxMouseEvent &e)
+               {
+                   e.Skip();
+                   sync_scrollbars();
+               });
+    html->Bind(wxEVT_SIZE,
+               [sync_scrollbars](wxSizeEvent &e)
+               {
+                   e.Skip();
+                   sync_scrollbars();
+               });
+
+    // Initial sync after layout
+    html->CallAfter(sync_scrollbars);
+#else
     content_sizer->Add(html, 1, wxEXPAND);
+#endif
+
     wxGetApp().UpdateDarkUI(html);
 }
 

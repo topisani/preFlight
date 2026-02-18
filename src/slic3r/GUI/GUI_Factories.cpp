@@ -126,7 +126,8 @@ std::vector<std::string> SettingsFactory::get_options(const bool is_part)
         "support_material_synchronize_layers",
     };
     options.erase(std::remove_if(options.begin(), options.end(),
-                                 [](const std::string &opt) {
+                                 [](const std::string &opt)
+                                 {
                                      return std::find(suppressed_options.begin(), suppressed_options.end(), opt) !=
                                             suppressed_options.end();
                                  }),

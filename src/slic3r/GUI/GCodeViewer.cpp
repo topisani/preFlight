@@ -3008,60 +3008,71 @@ void GCodeViewer::render_legend(float &legend_height)
             ImGui::PopStyleVar();
     };
 
+    // preFlight: Band-based legend rendering — shows actual data ranges instead of
+    // evenly-spaced interpolation. Each band gets its own palette color.
     auto append_range = [append_item](const libvgcode::ColorRange &range, unsigned int decimals)
     {
-        auto append_range_item = [append_item, &range](int i, float value, unsigned int decimals)
-        {
-            char buf[1024];
-            ::sprintf(buf, "%.*f", decimals, value);
-            append_item(EItemType::Rect, libvgcode::convert(range.get_palette()[i]), buf);
-        };
+        const auto &bands = range.get_bands();
+        if (bands.empty())
+            return;
 
-        std::vector<float> values = range.get_values();
-        if (values.size() == 1)
-            // single item use case
-            append_range_item(0, values.front(), decimals);
-        else if (values.size() == 2)
+        const size_t num_bands = bands.size();
+        const size_t palette_max = range.get_palette().size() - 1;
+
+        // Display from highest band (red/warm) to lowest (blue/cool)
+        for (int b = static_cast<int>(num_bands) - 1; b >= 0; --b)
         {
-            // two items use case
-            append_range_item(static_cast<int>(range.get_palette().size()) - 1, values.back(), decimals);
-            append_range_item(0, values.front(), decimals);
-        }
-        else
-        {
-            for (int i = static_cast<int>(range.get_palette().size()) - 1; i >= 0; --i)
+            const size_t palette_idx = (num_bands == 1) ? 0 : static_cast<size_t>(b) * palette_max / (num_bands - 1);
+
+            char buf[1024];
+            if (bands[b].low == bands[b].high)
             {
-                append_range_item(i, values[i], decimals);
+                // Single-value band
+                ::sprintf(buf, "%.*f", decimals, bands[b].low);
             }
+            else
+            {
+                // Range band: "low - high"
+                ::sprintf(buf, "%.*f - %.*f", decimals, bands[b].low, decimals, bands[b].high);
+            }
+
+            append_item(EItemType::Rect, libvgcode::convert(range.get_palette()[palette_idx]), buf);
         }
     };
 
+    // preFlight: Band-based time legend rendering
     auto append_time_range = [append_item](const libvgcode::ColorRange &range)
     {
-        auto append_range_item = [append_item, &range](int i, float value)
-        {
-            std::string str_value = get_time_dhms(value);
-            if (str_value == "0s")
-                str_value = "< 1s";
-            append_item(EItemType::Rect, libvgcode::convert(range.get_palette()[i]), str_value);
-        };
+        const auto &bands = range.get_bands();
+        if (bands.empty())
+            return;
 
-        std::vector<float> values = range.get_values();
-        if (values.size() == 1)
-            // single item use case
-            append_range_item(0, values.front());
-        else if (values.size() == 2)
+        const size_t num_bands = bands.size();
+        const size_t palette_max = range.get_palette().size() - 1;
+
+        for (int b = static_cast<int>(num_bands) - 1; b >= 0; --b)
         {
-            // two items use case
-            append_range_item(static_cast<int>(range.get_palette().size()) - 1, values.back());
-            append_range_item(0, values.front());
-        }
-        else
-        {
-            for (int i = static_cast<int>(range.get_palette().size()) - 1; i >= 0; --i)
+            const size_t palette_idx = (num_bands == 1) ? 0 : static_cast<size_t>(b) * palette_max / (num_bands - 1);
+
+            std::string label;
+            if (bands[b].low == bands[b].high)
             {
-                append_range_item(i, values[i]);
+                label = get_time_dhms(bands[b].low);
+                if (label == "0s")
+                    label = "< 1s";
             }
+            else
+            {
+                std::string lo = get_time_dhms(bands[b].low);
+                std::string hi = get_time_dhms(bands[b].high);
+                if (lo == "0s")
+                    lo = "< 1s";
+                if (hi == "0s")
+                    hi = "< 1s";
+                label = lo + " - " + hi;
+            }
+
+            append_item(EItemType::Rect, libvgcode::convert(range.get_palette()[palette_idx]), label);
         }
     };
 

@@ -177,18 +177,20 @@ bool Duet::upload(PrintHostUpload upload_data, ProgressFn prorgess_fn, ErrorFn e
     return res;
 }
 
+// preFlight: Try DSF first (preferred for oozeBot Rapid / SBC-based Duets), fall back to RRF
 Duet::ConnectionType Duet::connect(wxString &msg) const
 {
     auto res = ConnectionType::error;
-    auto url = get_connect_url(false);
+    auto url = get_connect_url(true); // DSF first
 
     auto http = Http::get(std::move(url));
     http.on_error(
             [&](std::string body, std::string error, unsigned status)
             {
-                auto dsfUrl = get_connect_url(true);
-                auto dsfHttp = Http::get(std::move(dsfUrl));
-                dsfHttp
+                // DSF failed — fall back to RRF
+                auto rrfUrl = get_connect_url(false);
+                auto rrfHttp = Http::get(std::move(rrfUrl));
+                rrfHttp
                     .on_error(
                         [&](std::string body, std::string error, unsigned status)
                         {
@@ -200,22 +202,23 @@ Duet::ConnectionType Duet::connect(wxString &msg) const
                     .on_complete(
                         [&](std::string body, unsigned)
                         {
-                            try
+                            BOOST_LOG_TRIVIAL(debug) << boost::format("Duet: Got: %1%") % body;
+
+                            int err_code = get_err_code_from_body(body);
+                            switch (err_code)
                             {
-                                pt::ptree root;
-                                std::istringstream iss(body);
-                                pt::read_json(iss, root);
-                                auto key = root.get_optional<std::string>("sessionKey");
-                                if (key)
-                                    msg = boost::nowide::widen(*key);
-                                res = ConnectionType::dsf;
-                            }
-                            catch (const std::exception &)
-                            {
-                                BOOST_LOG_TRIVIAL(error)
-                                    << "Failed to parse serverKey from Duet reply to Connect request: " << body;
-                                msg = format_error(body, L("Failed to parse a Connect reply"), 0);
-                                res = ConnectionType::error;
+                            case 0:
+                                res = ConnectionType::rrf;
+                                break;
+                            case 1:
+                                msg = format_error(body, L("Wrong password"), 0);
+                                break;
+                            case 2:
+                                msg = format_error(body, L("Could not get resources to create a new connection"), 0);
+                                break;
+                            default:
+                                msg = format_error(body, L("Unknown error occured"), 0);
+                                break;
                             }
                         })
                     .perform_sync();
@@ -223,23 +226,22 @@ Duet::ConnectionType Duet::connect(wxString &msg) const
         .on_complete(
             [&](std::string body, unsigned)
             {
-                BOOST_LOG_TRIVIAL(debug) << boost::format("Duet: Got: %1%") % body;
-
-                int err_code = get_err_code_from_body(body);
-                switch (err_code)
+                try
                 {
-                case 0:
-                    res = ConnectionType::rrf;
-                    break;
-                case 1:
-                    msg = format_error(body, L("Wrong password"), 0);
-                    break;
-                case 2:
-                    msg = format_error(body, L("Could not get resources to create a new connection"), 0);
-                    break;
-                default:
-                    msg = format_error(body, L("Unknown error occured"), 0);
-                    break;
+                    pt::ptree root;
+                    std::istringstream iss(body);
+                    pt::read_json(iss, root);
+                    auto key = root.get_optional<std::string>("sessionKey");
+                    if (key)
+                        msg = boost::nowide::widen(*key);
+                    res = ConnectionType::dsf;
+                }
+                catch (const std::exception &)
+                {
+                    BOOST_LOG_TRIVIAL(error)
+                        << "Failed to parse sessionKey from Duet reply to Connect request: " << body;
+                    msg = format_error(body, L("Failed to parse a Connect reply"), 0);
+                    res = ConnectionType::error;
                 }
             })
         .perform_sync();
@@ -265,6 +267,49 @@ void Duet::disconnect(ConnectionType connectionType) const
                                                 error % status % body;
             })
         .perform_sync();
+}
+
+// preFlight: Check if file already exists on the Duet before uploading
+bool Duet::file_exists(const boost::filesystem::path &upload_path, wxString &error) const
+{
+    wxString connect_msg;
+    auto connectionType = connect(connect_msg);
+    if (connectionType == ConnectionType::error)
+        return false; // Can't connect — let the upload attempt handle the error
+
+    bool exists = false;
+    bool dsf = (connectionType == ConnectionType::dsf);
+    auto filename = upload_path.string();
+
+    auto url =
+        dsf ? (boost::format("%1%machine/fileinfo/gcodes/%2%") % get_base_url() % Http::url_encode(filename)).str()
+            : (boost::format("%1%rr_fileinfo?name=0:/gcodes/%2%&%3%") % get_base_url() % Http::url_encode(filename) %
+               timestamp_str())
+                  .str();
+
+    auto http = Http::get(std::move(url));
+    if (dsf && !connect_msg.empty())
+        http.header("X-Session-Key", GUI::into_u8(connect_msg));
+
+    http.on_complete(
+            [&](std::string body, unsigned status)
+            {
+                if (dsf)
+                {
+                    // DSF returns 200 with file info if file exists (404 goes to on_error)
+                    exists = true;
+                }
+                else
+                {
+                    // RRF returns 200 always — check err code in body (0 = success = file exists)
+                    exists = (get_err_code_from_body(body) == 0);
+                }
+            })
+        .on_error([&](std::string, std::string, unsigned) { exists = false; })
+        .perform_sync();
+
+    disconnect(connectionType);
+    return exists;
 }
 
 std::string Duet::get_upload_url(const std::string &filename, ConnectionType connectionType) const

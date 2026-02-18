@@ -144,6 +144,12 @@ void ScrollablePanel::UpdateScrollbar()
     }
 }
 
+void ScrollablePanel::SetTrackColour(const wxColour &colour)
+{
+    if (m_scrollbar)
+        m_scrollbar->SetTrackColour(colour);
+}
+
 void ScrollablePanel::sys_color_changed()
 {
     bool is_dark = Slic3r::GUI::wxGetApp().dark_mode();

@@ -8,12 +8,14 @@
 #include <string>
 #include <vector>
 
-namespace Slic3r {
+namespace Slic3r
+{
 
 class Model;
 class ModelObject;
 
-namespace GUI {
+namespace GUI
+{
 
 class NotesDialog
 {

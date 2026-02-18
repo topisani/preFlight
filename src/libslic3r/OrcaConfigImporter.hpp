@@ -7,6 +7,7 @@
 
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,9 @@ public:
 
         // Fatal errors (corrupt ZIP, invalid JSON, etc.)
         std::vector<std::string> errors;
+
+        // Filament profiles where @System parent couldn't be resolved
+        std::vector<std::string> unresolved_inheritance;
     };
 
     // Parsed manifest from bundle_structure.json
@@ -98,9 +102,14 @@ private:
     void map_bed_temperatures(const nlohmann::json &j, DynamicPrintConfig &config, bool is_initial_layer,
                               const std::string &profile_name, ImportResult &result);
 
-    // Resolve inheritance: apply parent values as defaults for missing keys.
+    // Resolve inheritance: apply parent values for keys the child didn't explicitly set.
     void resolve_inheritance(DynamicPrintConfig &config, const std::string &inherits, Preset::Type preset_type,
-                             PresetBundle &bundle);
+                             PresetBundle &bundle, ImportResult &result, const std::set<std::string> *explicit_keys);
+
+    // Load bundled Orca system profile defaults for @System parent resolution.
+    // Returns true if the parent was found and values were applied.
+    bool load_orca_system_defaults(const std::string &parent_name, Preset::Type type, DynamicPrintConfig &config,
+                                   const std::set<std::string> *explicit_keys);
 
     // Save a single mapped profile into the preset bundle, returning the preset name.
     std::string save_preset(DynamicPrintConfig &config, const std::string &profile_name, Preset::Type preset_type,
@@ -111,6 +120,12 @@ private:
     std::map<std::string, DynamicPrintConfig> m_pending_profiles;
     // Track which pending profiles are which type.
     std::map<std::string, Preset::Type> m_pending_types;
+    // Track which config keys each pending profile explicitly set (vs default values).
+    std::map<std::string, std::set<std::string>> m_pending_explicit_keys;
+
+    // Cached Orca system profiles JSON (loaded lazily from resources).
+    nlohmann::json m_orca_system_profiles;
+    bool m_orca_system_loaded = false;
 };
 
 } // namespace Slic3r

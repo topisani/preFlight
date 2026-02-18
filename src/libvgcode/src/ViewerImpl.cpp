@@ -1751,6 +1751,8 @@ void ViewerImpl::set_color_range_palette(EViewType type, const Palette &palette)
     }
     }
     m_settings.update_colors = true;
+    // preFlight: Force re-computation of color ranges (bands depend on palette size)
+    m_settings_used_for_ranges.reset();
 }
 
 void ViewerImpl::set_travels_radius(float radius)
@@ -1965,8 +1967,8 @@ void ViewerImpl::update_color_ranges()
         if ((v.is_travel() && m_settings.options_visibility[size_t(EOptionType::Travels)]) ||
             (v.is_wipe() && m_settings.options_visibility[size_t(EOptionType::Wipes)]) || v.is_extrusion())
         {
-            m_speed_range.update(v.feedrate);
-            m_actual_speed_range.update(v.actual_feedrate);
+            m_speed_range.update(round_to_bin(v.feedrate));
+            m_actual_speed_range.update(round_to_bin(v.actual_feedrate));
         }
     }
 
@@ -1975,9 +1977,21 @@ void ViewerImpl::update_color_ranges()
     {
         for (float t : times)
         {
-            m_layer_time_range[i].update(t);
+            m_layer_time_range[i].update(round_to_bin(t));
         }
     }
+
+    // preFlight: Compute frequency-based bands for all ranges
+    m_height_range.finalize();
+    m_width_range.finalize();
+    m_speed_range.finalize();
+    m_actual_speed_range.finalize();
+    m_fan_speed_range.finalize();
+    m_temperature_range.finalize();
+    m_volumetric_rate_range.finalize();
+    m_actual_volumetric_rate_range.finalize();
+    m_layer_time_range[0].finalize();
+    m_layer_time_range[1].finalize();
 
     m_settings_used_for_ranges = m_settings;
 }

@@ -175,15 +175,15 @@ public:
                    {
                        event.Skip();
 
-                       m_can_rescale = is_new_scale_factor();
+                       // preFlight: Lightweight DPI update after cross-monitor drag.
+                       // Full rescale() is skipped (expensive UI rebuild), but em_unit must
+                       // reflect the new DPI so ImGui Legend sidebar sizes correctly.
+                       // MainFrame's MOVE_END handler propagates this to GUI_App::m_em_unit.
+                       if (is_new_scale_factor())
+                           m_em_unit = std::max<int>(10, int(m_scale_factor * m_em_unit_from_font_size));
 
-                       // If scale factor is different after moving of MainFrame ...
-                       if (m_can_rescale)
-                           // ... rescale application
-                           rescale(event.GetRect());
-                       else
-                           // set value to _true_ in purpose of possibility of a display dpi changing from System Settings
-                           m_can_rescale = true;
+                       m_prev_scale_factor = m_scale_factor;
+                       m_can_rescale = true;
                    });
 
         this->Bind(wxEVT_SYS_COLOUR_CHANGED,

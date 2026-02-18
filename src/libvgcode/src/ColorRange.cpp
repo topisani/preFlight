@@ -16,24 +16,6 @@ namespace libvgcode
 
 const ColorRange ColorRange::DUMMY_COLOR_RANGE = ColorRange();
 
-static float get_step_size(const ColorRange &color_range)
-{
-    const std::array<float, 2> &range = color_range.get_range();
-    const Palette &palette = color_range.get_palette();
-    switch (color_range.get_type())
-    {
-    default:
-    case EColorRangeType::Linear:
-    {
-        return (range[1] - range[0]) / (static_cast<float>(palette.size()) - 1.0f);
-    }
-    case EColorRangeType::Logarithmic:
-    {
-        return (range[0] != 0.0f) ? std::log(range[1] / range[0]) / (static_cast<float>(palette.size()) - 1.0f) : 0.0f;
-    }
-    }
-}
-
 ColorRange::ColorRange(EColorRangeType type) : m_type(type), m_palette(DEFAULT_RANGES_COLORS) {}
 
 EColorRangeType ColorRange::get_type() const
@@ -52,31 +34,52 @@ void ColorRange::set_palette(const Palette &palette)
         m_palette = palette;
 }
 
+// preFlight: Band-based color lookup — find which band the value belongs to
+// and return that band's solid palette color (no interpolation within bands).
 Color ColorRange::get_color_at(float value) const
 {
-    // Input value scaled to the colors range
-    float global_t = 0.0f;
-    value = std::clamp(value, m_range[0], m_range[1]);
-    const float step = get_step_size(*this);
-    if (step > 0.0f)
+    if (m_bands.empty())
     {
-        if (m_type == EColorRangeType::Logarithmic)
-        {
-            if (m_range[0] != 0.0f)
-                global_t = std::log(value / m_range[0]) / step;
-        }
-        else
-            global_t = (value - m_range[0]) / step;
+        // Fallback if not finalized
+        return m_palette[m_palette.size() / 2];
     }
 
-    const size_t color_max_idx = m_palette.size() - 1;
+    if (m_bands.size() == 1)
+    {
+        return m_palette[0];
+    }
 
-    // Compute the two colors just below (low) and above (high) the input value
-    const size_t color_low_idx = std::clamp<size_t>(static_cast<size_t>(global_t), 0, color_max_idx);
-    const size_t color_high_idx = std::clamp<size_t>(color_low_idx + 1, 0, color_max_idx);
+    // Find the nearest band by distance to its edge (linear scan, N <= 11).
+    // Raw vertex values may not exactly match round_to_bin band boundaries,
+    // so we pick the band whose range is closest rather than using <= threshold.
+    size_t band_idx = 0;
+    float best_dist = std::abs(value - m_bands[0].low);
+    for (size_t i = 0; i < m_bands.size(); ++i)
+    {
+        float dist;
+        if (value < m_bands[i].low)
+            dist = m_bands[i].low - value;
+        else if (value > m_bands[i].high)
+            dist = value - m_bands[i].high;
+        else
+        {
+            band_idx = i;
+            break; // Value is inside this band — exact match
+        }
 
-    // Interpolate between the low and high colors to find exactly which color the input value should get
-    return lerp(m_palette[color_low_idx], m_palette[color_high_idx], global_t - static_cast<float>(color_low_idx));
+        if (dist < best_dist)
+        {
+            best_dist = dist;
+            band_idx = i;
+        }
+    }
+
+    // Map band index to palette index: spread bands evenly across full palette
+    const size_t palette_max = m_palette.size() - 1;
+    const size_t num_bands = m_bands.size();
+    const size_t palette_idx = (num_bands == 1) ? 0 : band_idx * palette_max / (num_bands - 1);
+
+    return m_palette[palette_idx];
 }
 
 const std::array<float, 2> &ColorRange::get_range() const
@@ -84,67 +87,167 @@ const std::array<float, 2> &ColorRange::get_range() const
     return m_range;
 }
 
+// preFlight: Backward compat — return one representative value per band (midpoint).
 std::vector<float> ColorRange::get_values() const
 {
     std::vector<float> ret;
 
-    if (m_count == 1)
+    if (!m_finalized || m_bands.empty())
     {
-        // single item use case
-        ret.emplace_back(m_range[0]);
+        // Legacy fallback
+        if (m_range[0] < FLT_MAX)
+            ret.emplace_back(m_range[0]);
+        return ret;
     }
-    else if (m_count == 2)
+
+    for (const auto &band : m_bands)
     {
-        // two items use case
-        ret.emplace_back(m_range[0]);
-        ret.emplace_back(m_range[1]);
-    }
-    else
-    {
-        const float step_size = get_step_size(*this);
-        for (size_t i = 0; i < m_palette.size(); ++i)
-        {
-            float value = 0.0f;
-            switch (m_type)
-            {
-            default:
-            case EColorRangeType::Linear:
-            {
-                value = m_range[0] + static_cast<float>(i) * step_size;
-                break;
-            }
-            case EColorRangeType::Logarithmic:
-            {
-                value = ::exp(::log(m_range[0]) + static_cast<float>(i) * step_size);
-                break;
-            }
-            }
-            ret.emplace_back(value);
-        }
+        ret.emplace_back((band.low + band.high) * 0.5f);
     }
 
     return ret;
+}
+
+const std::vector<ColorBand> &ColorRange::get_bands() const
+{
+    return m_bands;
 }
 
 size_t ColorRange::size_in_bytes_cpu() const
 {
     size_t ret = STDVEC_MEMSIZE(m_palette, Color);
+    ret += STDVEC_MEMSIZE(m_bands, ColorBand);
+    // Approximate map overhead
+    ret += m_value_counts.size() * (sizeof(float) + sizeof(size_t) + 3 * sizeof(void *));
     return ret;
 }
 
 void ColorRange::update(float value)
 {
-    if (value != m_range[0] && value != m_range[1])
-        ++m_count;
-
+    // Track min/max for backward compat (get_range())
     m_range[0] = std::min(m_range[0], value);
     m_range[1] = std::max(m_range[1], value);
+
+    // preFlight: Accumulate frequency data for band computation
+    m_value_counts[value] += 1;
+    m_finalized = false;
 }
 
 void ColorRange::reset()
 {
     m_range = {FLT_MAX, -FLT_MAX};
     m_count = 0;
+    m_value_counts.clear();
+    m_bands.clear();
+    m_finalized = false;
+}
+
+// preFlight: Compute frequency-based bands from collected value data.
+// Step 1: Merge nearby values (within ~2% tolerance) to prevent floating-point
+//         drift from creating false distinctions (e.g., 0.620 vs 0.630).
+// Step 2: If merged count <= palette_size: each merged group becomes a band.
+//         Otherwise: frequency-weighted quantile grouping into palette_size bands.
+void ColorRange::finalize()
+{
+    m_bands.clear();
+
+    if (m_value_counts.empty())
+    {
+        m_finalized = true;
+        return;
+    }
+
+    // Step 1: Merge nearby values into groups.
+    // This prevents round_to_bin artifacts like 0.62 and 0.63 appearing as separate bands.
+    // IMPORTANT: The band span (high - low) is capped at 2% of the band's starting value.
+    // This prevents cascading merges where 0.095→0.10→0.11→...→0.40 all chain together.
+    struct MergedGroup
+    {
+        float low;
+        float high;
+        size_t count;
+    };
+    std::vector<MergedGroup> merged;
+
+    for (const auto &[val, cnt] : m_value_counts)
+    {
+        if (!merged.empty())
+        {
+            MergedGroup &last = merged.back();
+            // Max band span: 2% of starting value (or absolute 0.005 for very small values)
+            const float max_span = std::max(last.low * 0.02f, 0.005f);
+            if (val - last.low <= max_span)
+            {
+                last.high = val;
+                last.count += cnt;
+                continue;
+            }
+        }
+        merged.push_back({val, val, cnt});
+    }
+
+    const size_t n_groups = merged.size();
+    const size_t palette_size = m_palette.size();
+    m_count = n_groups;
+
+    if (n_groups <= palette_size)
+    {
+        // Each merged group becomes its own band
+        for (const auto &group : merged)
+        {
+            m_bands.push_back({group.low, group.high, group.count});
+        }
+    }
+    else
+    {
+        // Frequency-weighted quantile grouping into palette_size bands.
+        // Each band covers roughly equal total vertex count.
+        size_t total_count = 0;
+        for (const auto &group : merged)
+        {
+            total_count += group.count;
+        }
+
+        const size_t num_bands = palette_size;
+        size_t accumulated = 0;
+        size_t band_idx = 0;
+
+        ColorBand current_band;
+        current_band.low = merged[0].low;
+        current_band.high = merged[0].high;
+        current_band.count = 0;
+
+        for (size_t i = 0; i < n_groups; ++i)
+        {
+            current_band.high = merged[i].high;
+            current_band.count += merged[i].count;
+            accumulated += merged[i].count;
+
+            // Check if we should split here
+            const size_t remaining_bands = num_bands - band_idx - 1;
+            const size_t target = (band_idx + 1) * total_count / num_bands;
+            const bool has_more = (i + 1 < n_groups);
+
+            if (accumulated >= target && remaining_bands > 0 && has_more)
+            {
+                m_bands.push_back(current_band);
+                band_idx++;
+
+                // Start next band
+                current_band.low = merged[i + 1].low;
+                current_band.high = merged[i + 1].high;
+                current_band.count = 0;
+            }
+        }
+
+        // Push the last band
+        if (current_band.count > 0)
+        {
+            m_bands.push_back(current_band);
+        }
+    }
+
+    m_finalized = true;
 }
 
 } // namespace libvgcode

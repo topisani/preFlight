@@ -128,10 +128,56 @@ std::string OrcaConfigImporter::translate_gcode(const std::string &orca_gcode, c
     }
 
     // Step 3: Convert remaining simple [placeholder] -> {placeholder}
+    // Auto-append [0] for vector variables (e.g. first_layer_temperature)
     try
     {
         std::regex simple_pattern(R"(\[([a-z_][a-z_0-9]*)\])");
-        result = std::regex_replace(result, simple_pattern, "{$1}");
+        std::string out;
+        auto it = std::sregex_iterator(result.begin(), result.end(), simple_pattern);
+        auto end = std::sregex_iterator();
+        size_t last_pos = 0;
+        for (; it != end; ++it)
+        {
+            const std::smatch &m = *it;
+            out.append(result, last_pos, m.position() - last_pos);
+            std::string key = m[1].str();
+            const auto *optdef = print_config_def.get(key);
+            if (optdef && !optdef->is_scalar())
+                out += "{" + key + "[0]}";
+            else
+                out += "{" + key + "}";
+            last_pos = m.position() + m.length();
+        }
+        out.append(result, last_pos);
+        result = std::move(out);
+    }
+    catch (...)
+    {
+    }
+
+    // Step 3b: Fix {placeholder} already in brace syntax but missing [0] for vector variables.
+    // Some Orca profiles use PrusaSlicer-style {braces} directly, bypassing bracket-to-brace conversion.
+    try
+    {
+        std::regex brace_pattern(R"(\{([a-z_][a-z_0-9]*)\})");
+        std::string out;
+        auto it = std::sregex_iterator(result.begin(), result.end(), brace_pattern);
+        auto end = std::sregex_iterator();
+        size_t last_pos = 0;
+        for (; it != end; ++it)
+        {
+            const std::smatch &m = *it;
+            out.append(result, last_pos, m.position() - last_pos);
+            std::string key = m[1].str();
+            const auto *optdef = print_config_def.get(key);
+            if (optdef && !optdef->is_scalar())
+                out += "{" + key + "[0]}";
+            else
+                out += m[0].str();
+            last_pos = m.position() + m.length();
+        }
+        out.append(result, last_pos);
+        result = std::move(out);
     }
     catch (...)
     {
@@ -455,21 +501,28 @@ int OrcaConfigImporter::parse_and_map_profile(const std::string &json_content, P
 // -----------------------------------------------------------------------
 
 void OrcaConfigImporter::resolve_inheritance(DynamicPrintConfig &config, const std::string &inherits,
-                                             Preset::Type preset_type, PresetBundle &bundle)
+                                             Preset::Type preset_type, PresetBundle &bundle, ImportResult &result,
+                                             const std::set<std::string> *explicit_keys)
 {
     if (inherits.empty())
         return;
+
+    // Helper: apply parent values for keys the child didn't explicitly set.
+    auto apply_parent = [&](const DynamicPrintConfig &parent_config)
+    {
+        for (const auto &key : parent_config.keys())
+        {
+            if (explicit_keys && explicit_keys->count(key))
+                continue; // Child explicitly set this key, don't override
+            config.set_key_value(key, parent_config.option(key)->clone());
+        }
+    };
 
     // Step 1: Check pending profiles from this bundle
     auto it = m_pending_profiles.find(inherits);
     if (it != m_pending_profiles.end())
     {
-        // Apply parent values as defaults (only for keys not already set)
-        for (const auto &key : it->second.keys())
-        {
-            if (!config.has(key))
-                config.set_key_value(key, it->second.option(key)->clone());
-        }
+        apply_parent(it->second);
         return;
     }
 
@@ -493,24 +546,95 @@ void OrcaConfigImporter::resolve_inheritance(DynamicPrintConfig &config, const s
     const Preset *parent = collection->find_preset(inherits, false);
     if (parent)
     {
-        for (const auto &key : parent->config.keys())
-        {
-            if (!config.has(key))
-                config.set_key_value(key, parent->config.option(key)->clone());
-        }
+        apply_parent(parent->config);
         return;
     }
 
-    // Step 3: Parent not found - apply defaults and log warning
+    // Step 2b: Try bundled Orca system profile defaults
+    if (load_orca_system_defaults(inherits, preset_type, config, explicit_keys))
+        return;
+
+    // Step 3: Parent not found - warn and fall back to preFlight defaults
     BOOST_LOG_TRIVIAL(warning) << "OrcaImporter: Could not resolve inheritance from '" << inherits
                                << "'. Using defaults.";
+    result.unresolved_inheritance.push_back(inherits);
+}
 
-    const Preset &default_preset = collection->default_preset_for(config);
-    for (const auto &key : default_preset.config.keys())
+// -----------------------------------------------------------------------
+// Orca system profile loading
+// -----------------------------------------------------------------------
+
+bool OrcaConfigImporter::load_orca_system_defaults(const std::string &parent_name, Preset::Type type,
+                                                   DynamicPrintConfig &config,
+                                                   const std::set<std::string> *explicit_keys)
+{
+    // Only filament profiles have bundled Orca system defaults
+    if (type != Preset::TYPE_FILAMENT)
+        return false;
+
+    // Lazy-load the system profiles JSON
+    if (!m_orca_system_loaded)
     {
-        if (!config.has(key))
-            config.set_key_value(key, default_preset.config.option(key)->clone());
+        m_orca_system_loaded = true;
+        std::string path = resources_dir() + "/profiles/orca_system_profiles.json";
+        boost::nowide::ifstream ifs(path);
+        if (ifs)
+        {
+            try
+            {
+                m_orca_system_profiles = nlohmann::json::parse(ifs);
+            }
+            catch (const std::exception &e)
+            {
+                BOOST_LOG_TRIVIAL(error) << "OrcaImporter: Failed to parse " << path << ": " << e.what();
+            }
+        }
+        else
+        {
+            BOOST_LOG_TRIVIAL(warning) << "OrcaImporter: Orca system profiles not found at " << path;
+        }
     }
+
+    if (m_orca_system_profiles.empty() || !m_orca_system_profiles.contains(parent_name))
+        return false;
+
+    // Build the inheritance chain within the system profiles (child → ... → root)
+    std::vector<std::string> chain;
+    std::string current = parent_name;
+    while (!current.empty() && m_orca_system_profiles.contains(current) && chain.size() < 10)
+    {
+        chain.push_back(current);
+        current = m_orca_system_profiles[current].value("inherits", "");
+    }
+
+    // Merge from root to child (so child values override parent)
+    nlohmann::json merged;
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it)
+    {
+        for (auto &[key, value] : m_orca_system_profiles[*it].items())
+        {
+            if (key != "inherits") // Don't carry inherits into the merged result
+                merged[key] = value;
+        }
+    }
+
+    // Translate Orca keys → preFlight keys via the existing parser
+    DynamicPrintConfig system_config;
+    ImportResult dummy_result;
+    std::string merged_json = merged.dump();
+    parse_and_map_profile(merged_json, type, system_config, parent_name, dummy_result);
+
+    // Apply system profile values for keys the child didn't explicitly set
+    for (const auto &key : system_config.keys())
+    {
+        if (explicit_keys && explicit_keys->count(key))
+            continue;
+        config.set_key_value(key, system_config.option(key)->clone());
+    }
+
+    BOOST_LOG_TRIVIAL(info) << "OrcaImporter: Resolved '" << parent_name << "' from bundled Orca system profiles ("
+                            << system_config.keys().size() << " keys)";
+    return true;
 }
 
 // -----------------------------------------------------------------------
@@ -596,6 +720,9 @@ OrcaConfigImporter::ImportResult OrcaConfigImporter::import_bundle(
     ImportResult result;
     m_pending_profiles.clear();
     m_pending_types.clear();
+    m_pending_explicit_keys.clear();
+    m_orca_system_loaded = false;
+    m_orca_system_profiles = nlohmann::json();
 
     // Open the ZIP archive
     mz_zip_archive zip;
@@ -653,8 +780,21 @@ OrcaConfigImporter::ImportResult OrcaConfigImporter::import_bundle(
                     default:
                         continue;
                     }
-                    DynamicPrintConfig config = collection->default_preset().config;
+                    const DynamicPrintConfig &default_config = collection->default_preset().config;
+                    DynamicPrintConfig config = default_config;
                     parse_and_map_profile(json_str, type, config, name, result);
+
+                    // Track which keys the Orca JSON explicitly set (differ from defaults)
+                    std::set<std::string> explicit_keys;
+                    for (const auto &key : config.keys())
+                    {
+                        const ConfigOption *opt = config.option(key);
+                        const ConfigOption *def_opt = default_config.option(key);
+                        if (!def_opt || *opt != *def_opt)
+                            explicit_keys.insert(key);
+                    }
+                    m_pending_explicit_keys[name] = std::move(explicit_keys);
+
                     m_pending_profiles[name] = std::move(config);
                     m_pending_types[name] = type;
 
@@ -684,76 +824,89 @@ OrcaConfigImporter::ImportResult OrcaConfigImporter::import_bundle(
 
     close_zip_reader(&zip);
 
-    // Phase 2: Resolve inheritance and save each profile
+    // Phase 2: Resolve inheritance and save each profile.
+    // Each iteration is wrapped in try-catch so a single profile failure
+    // (e.g. filesystem error during save) doesn't abort the entire import
+    // and bypass the results dialog.
     for (auto &[name, config] : m_pending_profiles)
     {
-        auto type_it = m_pending_types.find(name);
-        if (type_it == m_pending_types.end())
-            continue;
-
-        Preset::Type type = type_it->second;
-
-        // Check if user wanted this type
-        if ((type == Preset::TYPE_PRINTER && !options.import_printer) ||
-            (type == Preset::TYPE_FILAMENT && !options.import_filaments) ||
-            (type == Preset::TYPE_PRINT && !options.import_processes))
-            continue;
-
-        // Resolve inheritance
-        auto *inherits_opt = config.opt<ConfigOptionString>("_orca_inherits");
-        if (inherits_opt && !inherits_opt->value.empty())
+        try
         {
-            resolve_inheritance(config, inherits_opt->value, type, preset_bundle);
+            auto type_it = m_pending_types.find(name);
+            if (type_it == m_pending_types.end())
+                continue;
+
+            Preset::Type type = type_it->second;
+
+            // Check if user wanted this type
+            if ((type == Preset::TYPE_PRINTER && !options.import_printer) ||
+                (type == Preset::TYPE_FILAMENT && !options.import_filaments) ||
+                (type == Preset::TYPE_PRINT && !options.import_processes))
+                continue;
+
+            // Resolve inheritance
+            auto *inherits_opt = config.opt<ConfigOptionString>("_orca_inherits");
+            if (inherits_opt && !inherits_opt->value.empty())
+            {
+                auto ek_it = m_pending_explicit_keys.find(name);
+                const std::set<std::string> *expl_keys = (ek_it != m_pending_explicit_keys.end()) ? &ek_it->second
+                                                                                                  : nullptr;
+                resolve_inheritance(config, inherits_opt->value, type, preset_bundle, result, expl_keys);
+            }
+
+            // Remove our internal tracking key
+            config.erase("_orca_inherits");
+
+            // Apply default config as base for any missing keys
+            PresetCollection *collection = nullptr;
+            switch (type)
+            {
+            case Preset::TYPE_PRINTER:
+                collection = &preset_bundle.printers;
+                break;
+            case Preset::TYPE_FILAMENT:
+                collection = &preset_bundle.filaments;
+                break;
+            case Preset::TYPE_PRINT:
+                collection = &preset_bundle.prints;
+                break;
+            default:
+                continue;
+            }
+
+            const DynamicPrintConfig *default_config = nullptr;
+            if (type == Preset::TYPE_PRINTER)
+                default_config = &collection->default_preset_for(config).config;
+            else
+                default_config = &collection->default_preset().config;
+
+            // Fill in defaults for keys not yet set
+            DynamicPrintConfig full_config = *default_config;
+            full_config.apply(config);
+
+            // Save the preset
+            std::string saved_name = save_preset(full_config, name, type, preset_bundle, confirm_overwrite, result);
+            if (saved_name.empty())
+                continue;
+
+            switch (type)
+            {
+            case Preset::TYPE_PRINTER:
+                result.imported_printers.push_back(saved_name);
+                break;
+            case Preset::TYPE_FILAMENT:
+                result.imported_filaments.push_back(saved_name);
+                break;
+            case Preset::TYPE_PRINT:
+                result.imported_prints.push_back(saved_name);
+                break;
+            default:
+                break;
+            }
         }
-
-        // Remove our internal tracking key
-        config.erase("_orca_inherits");
-
-        // Apply default config as base for any missing keys
-        PresetCollection *collection = nullptr;
-        switch (type)
+        catch (const std::exception &e)
         {
-        case Preset::TYPE_PRINTER:
-            collection = &preset_bundle.printers;
-            break;
-        case Preset::TYPE_FILAMENT:
-            collection = &preset_bundle.filaments;
-            break;
-        case Preset::TYPE_PRINT:
-            collection = &preset_bundle.prints;
-            break;
-        default:
-            continue;
-        }
-
-        const DynamicPrintConfig *default_config = nullptr;
-        if (type == Preset::TYPE_PRINTER)
-            default_config = &collection->default_preset_for(config).config;
-        else
-            default_config = &collection->default_preset().config;
-
-        // Fill in defaults for keys not yet set
-        DynamicPrintConfig full_config = *default_config;
-        full_config.apply(config);
-
-        // Save the preset
-        std::string saved_name = save_preset(full_config, name, type, preset_bundle, confirm_overwrite, result);
-        if (saved_name.empty())
-            continue;
-
-        switch (type)
-        {
-        case Preset::TYPE_PRINTER:
-            result.imported_printers.push_back(saved_name);
-            break;
-        case Preset::TYPE_FILAMENT:
-            result.imported_filaments.push_back(saved_name);
-            break;
-        case Preset::TYPE_PRINT:
-            result.imported_prints.push_back(saved_name);
-            break;
-        default:
-            break;
+            result.errors.push_back("Failed to import '" + name + "': " + std::string(e.what()));
         }
     }
 

@@ -77,7 +77,15 @@ std::string PresetHints::cooling_description(const Preset &preset)
         }
     }
     else
-        out += cooling ? _u8L("During the other layers, fan will be turned off.") : _u8L("Fan will be turned off.");
+    {
+        // preFlight: Guide user toward manual fan controls when auto cooling and fan_always_on are both off
+        if (cooling)
+            out += _u8L("During the other layers, fan will be turned off.");
+        else if (preset.config.opt_bool("enable_manual_fan_speeds", 0))
+            out += _u8L("Fan will use manual fan speed controls below.");
+        else
+            out += _u8L("Fan will be turned off unless manual fan controls are enabled below.");
+    }
 
     return out;
 }

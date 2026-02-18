@@ -336,6 +336,10 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig *config, con
     // Note: s_approved_narrow_widths and s_approved_wide_widths are now file-scope statics (s_approved_*)
     // to allow pre-approval via ConfigManipulation::approve_extrusion_width()
 
+    // preFlight: State for "Yes to All" / "No to All" across all extrusion width validations
+    bool approve_all_widths = false;
+    bool reset_all_widths = false;
+
     // Helper lambda to validate extrusion width against its corresponding nozzle
     auto validate_extrusion_width =
         [&](const std::string &width_key, const std::string &extruder_key, const std::string &label)
@@ -461,9 +465,69 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig *config, con
                                         label, width_str, nozzle_diam, width_str, nozzle_diam);
         }
 
-        WarningDialog dialog(m_msg_dlg_parent, msg_text, _L("Parameter validation") + ": " + width_key, wxYES | wxNO);
-        is_msg_dlg_already_exist = true;
-        if (dialog.ShowModal() == wxID_YES)
+        // preFlight: Handle "to All" state from a previous iteration
+        bool keep = false;
+        if (approve_all_widths)
+            keep = true;
+        else if (reset_all_widths)
+            keep = false;
+        else
+        {
+            // Show 4-button dialog: Yes / Yes to All / No / No to All
+            enum
+            {
+                ID_YES_TO_ALL = wxID_HIGHEST + 1,
+                ID_NO_TO_ALL
+            };
+
+            wxDialog dialog(m_msg_dlg_parent, wxID_ANY, _L("Parameter validation") + ": " + width_key,
+                            wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE);
+            wxBoxSizer *sizer = new wxBoxSizer(wxVERTICAL);
+            wxBoxSizer *btn_sizer = new wxBoxSizer(wxHORIZONTAL);
+
+            sizer->Add(new wxStaticText(&dialog, wxID_ANY, msg_text), 0, wxALL, 15);
+
+            btn_sizer->AddStretchSpacer();
+            auto add_btn = [&](wxWindowID id, const wxString &lbl, bool focus)
+            {
+                wxButton *btn = new wxButton(&dialog, id, lbl);
+                if (focus)
+                {
+                    btn->SetFocus();
+                    btn->SetDefault();
+                }
+                btn_sizer->Add(btn, 0, wxLEFT, 5);
+                btn->Bind(wxEVT_BUTTON, [&dialog, id](wxCommandEvent &) { dialog.EndModal(id); });
+            };
+            add_btn(wxID_YES, _L("Yes"), true);
+            add_btn(ID_YES_TO_ALL, _L("Yes to All"), false);
+            add_btn(wxID_NO, _L("No"), false);
+            add_btn(ID_NO_TO_ALL, _L("No to All"), false);
+
+            sizer->Add(btn_sizer, 0, wxEXPAND | wxALL, 10);
+            dialog.SetSizerAndFit(sizer);
+            wxGetApp().UpdateDlgDarkUI(&dialog);
+            dialog.CenterOnParent();
+
+            is_msg_dlg_already_exist = true;
+            int result = dialog.ShowModal();
+            is_msg_dlg_already_exist = false;
+
+            if (result == ID_YES_TO_ALL)
+            {
+                approve_all_widths = true;
+                keep = true;
+            }
+            else if (result == ID_NO_TO_ALL)
+            {
+                reset_all_widths = true;
+                keep = false;
+            }
+            else
+                keep = (result == wxID_YES);
+        }
+
+        if (keep)
         {
             // User approved this out-of-range width - remember it
             if (is_too_narrow)
@@ -480,7 +544,6 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig *config, con
             new_conf.set_key_value(width_key, new ConfigOptionFloatOrPercent(nozzle_diam, false));
             apply(config, &new_conf);
         }
-        is_msg_dlg_already_exist = false;
     };
 
     // Validate all extrusion widths against their corresponding nozzles

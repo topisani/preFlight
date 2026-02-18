@@ -7,6 +7,7 @@
 #include "UIColors.hpp"
 
 #include <wx/dcgraph.h>
+#include <wx/menu.h>
 #include <wx/panel.h>
 
 #include "slic3r/GUI/GUI_App.hpp"
@@ -167,9 +168,27 @@ void TextInput::Create(wxWindow *parent, wxString text, wxString label, wxString
                             e.Skip();
                             CallAfter([this]() { SyncScrollbar(); });
                         });
+        // preFlight: Only scroll text content when user has clicked inside the text area.
+        // The flag is set on ThemedTextCtrl so its MSWWindowProc can intercept WM_MOUSEWHEEL
+        // at the Win32 level (before the native EDIT control processes it).
+        // Cleared on mouse-leave so scrolling past the control still scrolls the page.
+        text_ctrl->Bind(wxEVT_LEFT_DOWN,
+                        [this](wxMouseEvent &e)
+                        {
+                            text_ctrl->SetWheelScrollActive(true);
+                            e.Skip();
+                        });
+        text_ctrl->Bind(wxEVT_LEAVE_WINDOW,
+                        [this](wxMouseEvent &e)
+                        {
+                            text_ctrl->SetWheelScrollActive(false);
+                            e.Skip();
+                        });
         text_ctrl->Bind(wxEVT_MOUSEWHEEL,
                         [this](wxMouseEvent &e)
                         {
+                            // When wheel scroll is active, the native EDIT handles scrolling
+                            // via MSWWindowProc fall-through. Just sync our custom scrollbar.
                             e.Skip();
                             CallAfter([this]() { SyncScrollbar(); });
                         });
@@ -218,7 +237,52 @@ void TextInput::Create(wxWindow *parent, wxString text, wxString label, wxString
                         e.SetId(GetId());
                         ProcessEventLocally(e);
                     });
-    text_ctrl->Bind(wxEVT_RIGHT_DOWN, [](auto &e) {}); // disable context menu
+    // preFlight: custom context menu with only the essentials (no IME/Unicode/Reading order clutter)
+    text_ctrl->Bind(wxEVT_CONTEXT_MENU,
+                    [this](wxContextMenuEvent &)
+                    {
+                        wxTextCtrl *tc = text_ctrl;
+                        wxMenu menu;
+
+                        menu.Append(wxID_UNDO, _L("Undo"));
+                        menu.AppendSeparator();
+                        menu.Append(wxID_CUT, _L("Cut"));
+                        menu.Append(wxID_COPY, _L("Copy"));
+                        menu.Append(wxID_PASTE, _L("Paste"));
+                        menu.Append(wxID_DELETE, _L("Delete"));
+
+                        menu.Enable(wxID_UNDO, tc->CanUndo());
+                        bool has_sel = tc->GetStringSelection().length() > 0;
+                        menu.Enable(wxID_CUT, has_sel && tc->IsEditable());
+                        menu.Enable(wxID_COPY, has_sel);
+                        menu.Enable(wxID_DELETE, has_sel && tc->IsEditable());
+                        menu.Enable(wxID_PASTE, tc->IsEditable() && tc->CanPaste());
+
+                        menu.Bind(wxEVT_MENU,
+                                  [tc](wxCommandEvent &evt)
+                                  {
+                                      switch (evt.GetId())
+                                      {
+                                      case wxID_UNDO:
+                                          tc->Undo();
+                                          break;
+                                      case wxID_CUT:
+                                          tc->Cut();
+                                          break;
+                                      case wxID_COPY:
+                                          tc->Copy();
+                                          break;
+                                      case wxID_PASTE:
+                                          tc->Paste();
+                                          break;
+                                      case wxID_DELETE:
+                                          tc->RemoveSelection();
+                                          break;
+                                      }
+                                  });
+
+                        tc->PopupMenu(&menu);
+                    });
 
     if (!icon.IsEmpty())
     {
