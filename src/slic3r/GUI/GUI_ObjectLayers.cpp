@@ -370,9 +370,9 @@ LayerRangeEditor::LayerRangeEditor(ObjectLayers *parent, const wxString &value, 
         [this, edit_fn](wxEvent &)
         {
             m_enter_pressed = true;
-        // Workaround! Under Linux we have to use CallAfter() to avoid crash after pressing ENTER key
+        // Workaround! Under Linux/macOS we have to use CallAfter() to avoid crash after pressing ENTER key
         // see #7531, #8055, #8408
-#ifdef __linux__
+#ifndef _WIN32
             wxTheApp->CallAfter(
                 [this, edit_fn]()
                 {
@@ -391,7 +391,7 @@ LayerRangeEditor::LayerRangeEditor(ObjectLayers *parent, const wxString &value, 
                         SetValue(m_valid_value);
                         m_call_kill_focus = true;
                     }
-#ifdef __linux__
+#ifndef _WIN32
                 });
 #endif
         },

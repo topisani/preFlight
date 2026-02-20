@@ -350,6 +350,18 @@ MainFrame::MainFrame(const int font_point_size)
              event.Skip();
          });
 
+    // preFlight: Pause rendering when minimized, resume when restored.
+    // wxEVT_ACTIVATE does not fire on minimize - wxEVT_ICONIZE is the only
+    // notification. Without this, on_idle keeps rendering offscreen frames
+    // because IsShownOnScreen() returns true for iconized windows on Windows.
+    Bind(wxEVT_ICONIZE,
+         [this](wxIconizeEvent &event)
+         {
+             event.Skip();
+             if (m_plater)
+                 m_plater->on_activate(!event.IsIconized());
+         });
+
     Bind(wxEVT_SIZE,
          [this](wxSizeEvent &event)
          {
@@ -945,7 +957,12 @@ void MainFrame::init_tabpanel()
                                                // Show plater
                                                m_plater->Show();
                                            }
-                                           m_plater->select_view_3D("3D");
+                                           // If slicing is in progress, show the Preview progress animation
+                                           // instead of the static 3D platter
+                                           if (m_plater->is_slicing())
+                                               m_plater->select_view_3D("Preview");
+                                           else
+                                               m_plater->select_view_3D("3D");
                                            // Recalculate layout so the canvas resizes to current window dimensions
                                            if (was_hidden)
                                                Layout();
@@ -1035,6 +1052,18 @@ void MainFrame::init_tabpanel()
             {
                 if (m_plater)
                 {
+                    // Ignore clicks while slicing is already in progress
+                    if (m_plater->is_slicing())
+                        return;
+
+                    // Ensure plater is visible (may be hidden when on settings tabs)
+                    if (!m_plater->IsShown())
+                    {
+                        for (size_t i = 0; i < m_tabpanel->GetPageCount(); ++i)
+                            m_tabpanel->GetPage(i)->Hide();
+                        m_plater->Show();
+                        Layout();
+                    }
                     m_plater->select_view_3D("Preview");
                     m_plater->reslice();
                 }

@@ -2900,38 +2900,62 @@ void GLCanvas3D::on_idle(wxIdleEvent &evt)
     if (!m_initialized || m_rendering_paused)
         return;
 
+    // preFlight: Safety net for orphaned drag state. If a drag is in progress but no
+    // mouse buttons are physically held down, the button-up event was missed (e.g. user
+    // released outside the application window). Force cleanup to prevent the last drag's
+    // m_dirty from keeping the render loop alive indefinitely.
+    if (m_mouse.dragging)
+    {
+        wxMouseState ms = wxGetMouseState();
+        if (!ms.LeftIsDown() && !ms.MiddleIsDown() && !ms.RightIsDown())
+        {
+            mouse_up_cleanup();
+            m_dirty = false;
+        }
+    }
+
+    // preFlight: Process state updates (toolbars, notifications, gizmos).
     m_dirty |= m_main_toolbar.update_items_state();
     m_dirty |= m_undoredo_toolbar.update_items_state();
-    // m_dirty |= wxGetApp().plater()->get_view_toolbar().update_items_state();
     m_dirty |= wxGetApp().plater()->get_collapse_toolbar().update_items_state();
-    bool mouse3d_controller_applied = wxGetApp().plater()->get_mouse3d_controller().apply(
-        wxGetApp().plater()->get_camera());
-    m_dirty |= mouse3d_controller_applied;
+    m_dirty |= wxGetApp().plater()->get_mouse3d_controller().apply(wxGetApp().plater()->get_camera());
     m_dirty |= wxGetApp().plater()->get_notification_manager()->update_notifications(*this);
     auto gizmo = wxGetApp().plater()->canvas3D()->get_gizmos_manager().get_current();
     if (gizmo != nullptr)
         m_dirty |= gizmo->update_items_state();
-    // ImGuiWrapper::m_requires_extra_frame may have been set by a render made outside of the OnIdle mechanism
-    bool imgui_requires_extra_frame = wxGetApp().imgui()->requires_extra_frame();
-    m_dirty |= imgui_requires_extra_frame;
 
     if (!m_dirty)
         return;
 
-    // this needs to be done here.
-    // during the render launched by the refresh the value may be set again
     wxGetApp().imgui()->reset_requires_extra_frame();
 
     _refresh_if_shown_on_screen();
 
-    if (m_extra_frame_requested || mouse3d_controller_applied || imgui_requires_extra_frame ||
-        wxGetApp().imgui()->requires_extra_frame())
-    {
-        m_extra_frame_requested = false;
+    // preFlight: The original code called evt.RequestMore() unconditionally with
+    // imgui_requires_extra_frame, creating infinite render loops. The loop sources
+    // were: (1) per-hover set_requires_extra_frame() in legend items (now removed),
+    // (2) pre-render imgui_requires_extra_frame check (now removed).
+    // With those gone, it's safe to RequestMore when code explicitly requests another
+    // frame via request_extra_frame() or when ImGui needs layout recalculation.
+    // This ensures the idle loop fires promptly for legend resize, view type changes, etc.
+    if (m_extra_frame_requested || wxGetApp().imgui()->requires_extra_frame())
         evt.RequestMore();
-    }
     else
         m_dirty = false;
+    m_extra_frame_requested = false;
+
+    // preFlight: Briefly release and re-acquire the GL context after each render.
+    // This signals the GPU driver that a frame boundary was reached. The immediate
+    // re-acquire keeps the context available for non-render code paths that make GL
+    // calls (slicing startup, gcode loading, etc.).
+    // NOTE: Releasing WITHOUT re-acquiring causes crashes during slicing regardless
+    // of whether it's done here, in a timer, or in the ImGui event handler. The only
+    // safe release-without-reacquire is mouse_up_cleanup() for canvas drags.
+#ifdef _WIN32
+    glsafe(::glFinish());
+    wglMakeCurrent(NULL, NULL);
+    _set_current();
+#endif
 }
 
 void GLCanvas3D::on_char(wxKeyEvent &evt)
@@ -3691,18 +3715,25 @@ void GLCanvas3D::on_render_timer(wxTimerEvent &evt)
 
 void GLCanvas3D::schedule_extra_frame(int miliseconds)
 {
+    // preFlight: Ignore schedule requests made during the render cycle.
+    // Code inside render() calls schedule_extra_frame(0) which originally started a
+    // 33ms timer, creating an infinite loop. All legitimate render triggers are handled
+    // by on_idle's update checks or by event handlers.
+    if (m_in_render)
+        return;
+
     // Schedule idle event right now
     if (miliseconds == 0)
     {
-        // We want to wakeup idle evnt but most likely this is call inside render cycle so we need to wait
-        if (m_in_render)
-            miliseconds = 33;
-        else
-        {
-            m_dirty = true;
-            wxWakeUpIdle();
-            return;
-        }
+        // preFlight: Just set m_dirty. Do NOT call wxWakeUpIdle(). The notification
+        // system calls schedule_extra_frame(0) from timer callbacks and from
+        // update_notifications(). If we post wxWakeUpIdle here, it triggers another
+        // idle cycle, which calls update_notifications, which calls schedule_extra_frame(0)
+        // again - infinite loop. Setting m_dirty is sufficient: the next natural idle
+        // event will render it. For immediate wakeup from background threads, callers
+        // should use wxWakeUpIdle() themselves after set_as_dirty().
+        m_dirty = true;
+        return;
     }
     int remaining_time = m_render_timer.GetInterval();
     // Timer is not running
@@ -3795,20 +3826,40 @@ void GLCanvas3D::on_mouse(wxMouseEvent &evt)
         // ignore left up events coming from imgui windows and not processed by them
         m_mouse.ignore_left_up = true;
     m_tooltip.set_in_imgui(false);
-    if (imgui->update_mouse_data(evt))
+    // preFlight: We skip rendering during bare mouse motion (Moving) to save GPU.
+    // This means ImGui's WantCaptureMouse flag can become stale. To keep it fresh
+    // without rendering, we update io.MousePos during hover. On button-down events,
+    // we force a render to recalculate WantCaptureMouse before ImGui processes the click.
+    if (evt.Moving())
     {
-        m_mouse.position = evt.Leaving() ? Vec2d(-1.0, -1.0) : pos.cast<double>();
-        m_tooltip.set_in_imgui(true);
-        render();
+        // Keep ImGui mouse position fresh without calling update_mouse_data() which
+        // triggers new_frame() and corrupts ImGui state when not followed by a render.
+        ImGui::GetIO().MousePos = ImVec2((float) evt.GetX(), (float) evt.GetY());
+    }
+    else
+    {
+        // For button-down events after an idle hover, force a render to freshen
+        // ImGui's WantCaptureMouse before update_mouse_data checks want_mouse().
+        if (evt.ButtonDown())
+        {
+            ImGui::GetIO().MousePos = ImVec2((float) evt.GetX(), (float) evt.GetY());
+            render();
+        }
+        if (imgui->update_mouse_data(evt))
+        {
+            m_mouse.position = evt.Leaving() ? Vec2d(-1.0, -1.0) : pos.cast<double>();
+            m_tooltip.set_in_imgui(true);
+            render();
 #ifdef SLIC3R_DEBUG_MOUSE_EVENTS
-        printf((format_mouse_event_debug_message(evt) + " - Consumed by ImGUI\n").c_str());
+            printf((format_mouse_event_debug_message(evt) + " - Consumed by ImGUI\n").c_str());
 #endif /* SLIC3R_DEBUG_MOUSE_EVENTS */
-        m_dirty = true;
-        // do not return if dragging or tooltip not empty to allow for tooltip update
-        // also, do not return if the mouse is moving and also is inside MM gizmo to allow update seed fill selection
-        if (!m_mouse.dragging && m_tooltip.is_empty() &&
-            (m_gizmos.get_current_type() != GLGizmosManager::MmSegmentation || !evt.Moving()))
-            return;
+            m_dirty = true;
+            // do not return if dragging or tooltip not empty to allow for tooltip update
+            // also, do not return if the mouse is moving and also is inside MM gizmo to allow update seed fill selection
+            if (!m_mouse.dragging && m_tooltip.is_empty() &&
+                (m_gizmos.get_current_type() != GLGizmosManager::MmSegmentation || !evt.Moving()))
+                return;
+        }
     }
 
 #ifdef __WXMSW__
@@ -3988,9 +4039,9 @@ void GLCanvas3D::on_mouse(wxMouseEvent &evt)
     }
     else if (evt.LeftDown() || evt.RightDown() || evt.MiddleDown())
     {
-#ifdef __linux__
+#ifndef _WIN32
         // preFlight: Track genuine LeftDown events on the canvas so we can filter
-        // phantom LeftUp events that GTK delivers after popup menus close.
+        // phantom LeftUp events that GTK/Cocoa deliver after popup menus close.
         if (evt.LeftDown())
             m_mouse.left_down_on_canvas = true;
 #endif
@@ -4165,6 +4216,34 @@ void GLCanvas3D::on_mouse(wxMouseEvent &evt)
     }
     else if (evt.Dragging())
     {
+        // preFlight: Detect phantom drag events. After a mouse button release, wxWidgets
+        // can deliver stale drag events with LeftIsDown/MiddleIsDown still reported as
+        // held. These arrive at 80-125/sec with changing positions (mouse sensor noise),
+        // pegging the GPU at 60-70%. Check the actual physical button state - if no
+        // buttons are physically held, these are phantom events.
+        {
+            wxMouseState ms = wxGetMouseState();
+            if (!ms.LeftIsDown() && !ms.MiddleIsDown() && !ms.RightIsDown())
+            {
+                mouse_up_cleanup();
+                return;
+            }
+        }
+
+        // preFlight: VSync (enabled in OpenGLManager.cpp) caps rendering to the
+        // monitor's refresh rate. The drag handler only does lightweight camera math
+        // and sets m_dirty - actual rendering happens in on_idle at VSync pace.
+        // No artificial throttle needed.
+
+        // preFlight: Skip drag processing if position hasn't changed - there's nothing
+        // new to render and processing would just waste GPU cycles.
+        {
+            static Point last_drag_pos(INT_MIN, INT_MIN);
+            if (pos == last_drag_pos)
+                return;
+            last_drag_pos = pos;
+        }
+
         m_mouse.dragging = true;
 
         if (m_layers_editing.state != LayersEditing::Unknown && layer_editing_object_idx != -1)
@@ -4288,8 +4367,8 @@ void GLCanvas3D::on_mouse(wxMouseEvent &evt)
             // deselect and propagate event through callback
             if (!evt.ShiftDown() && (!any_gizmo_active || !evt.CmdDown()) &&
                 m_picking_enabled
-#ifdef __linux__
-                // preFlight: GTK delivers phantom LeftUp events to the canvas after popup menus
+#ifndef _WIN32
+                // preFlight: GTK/Cocoa deliver phantom LeftUp events to the canvas after popup menus
                 // (e.g. Add Shape) close. Only deselect if a genuine LeftDown preceded this LeftUp.
                 && m_mouse.left_down_on_canvas
 #endif
@@ -4351,7 +4430,8 @@ void GLCanvas3D::on_mouse(wxMouseEvent &evt)
         if (m_selection.is_empty())
             m_gizmos.reset_all_states();
 
-        m_dirty = true;
+        // preFlight: Do NOT set m_dirty on bare mouse motion (no button pressed).
+        // Mouse position is updated above so clicks/drags remain accurate.
     }
     else
         evt.Skip();
@@ -4405,9 +4485,13 @@ void GLCanvas3D::on_mouse(wxMouseEvent &evt)
 
 void GLCanvas3D::on_paint(wxPaintEvent &evt)
 {
-    if (m_initialized)
-        m_dirty = true;
-    else
+    // preFlight: wxPaintDC validates the paint region, preventing WM_PAINT from being
+    // re-sent after every SwapBuffers(). We intentionally do NOT set m_dirty here -
+    // rendering is driven by actual state changes which set m_dirty through their own
+    // code paths. Setting m_dirty on every paint created a feedback loop with SwapBuffers.
+    wxPaintDC dc(m_canvas);
+
+    if (!m_initialized)
         // Call render directly, so it gets initialized immediately, not from On Idle handler.
         this->render();
 }
@@ -5014,14 +5098,29 @@ void GLCanvas3D::mouse_up_cleanup()
     m_mouse.set_start_position_3D_as_invalid();
     m_mouse.set_start_position_2D_as_invalid();
     m_mouse.dragging = false;
+
     m_mouse.ignore_left_up = false;
-#ifdef __linux__
+#ifndef _WIN32
     m_mouse.left_down_on_canvas = false;
 #endif
-    m_dirty = true;
+    // preFlight: Removed m_dirty = true. The last frame rendered during the drag
+    // already shows the final visual state. Callers that genuinely need a post-release
+    // render (volume moves via do_move(), context menus via direct render()) handle it
+    // themselves before reaching mouse_up_cleanup().
 
     if (m_canvas->HasCapture())
         m_canvas->ReleaseMouse();
+
+    // preFlight: Flush the GPU pipeline and release the GL context after a drag ends.
+    // glFinish() completes all pending GPU work. Then releasing the context via
+    // wglMakeCurrent(NULL, NULL) tells the GPU driver we're done with GL entirely,
+    // allowing it to drop to an idle power state. Without this, the driver keeps the
+    // GPU clocked high expecting more work, even though we're rendering 0 frames.
+    // The context is re-acquired automatically by _set_current() before the next render.
+    glsafe(::glFinish());
+#ifdef _WIN32
+    wglMakeCurrent(NULL, NULL);
+#endif
 }
 
 bool GLCanvas3D::is_object_sinking(int object_idx) const
@@ -5032,6 +5131,13 @@ bool GLCanvas3D::is_object_sinking(int object_idx) const
             return true;
     }
     return false;
+}
+
+void GLCanvas3D::release_gl_context()
+{
+#ifdef _WIN32
+    wglMakeCurrent(NULL, NULL);
+#endif
 }
 
 void GLCanvas3D::apply_retina_scale(Vec2d &screen_coordinate) const

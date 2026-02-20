@@ -33,6 +33,7 @@ class CollapsibleSection : public wxPanel
 public:
     CollapsibleSection(wxWindow *parent, const wxString &title, bool initially_expanded = true,
                        wxWindowID id = wxID_ANY);
+    ~CollapsibleSection() override;
 
     // Content management
     void SetContent(wxWindow *content);

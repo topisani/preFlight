@@ -2840,7 +2840,14 @@ void GCodeViewer::render_legend(float &legend_height)
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(win_bg_r, win_bg_g, win_bg_b, win_bg_a));
     const float max_height = 0.75f * static_cast<float>(cnv_size.get_height());
     const float child_height = 0.3333f * max_height;
-    const float sidebar_width = 45.0f * static_cast<float>(wxGetApp().em_unit());
+    // preFlight: em_unit() is in logical pixels; ImGui operates in physical pixels on
+    // Retina/HiDPI.  Scale by the canvas content scale factor to match.
+    float em = static_cast<float>(wxGetApp().em_unit());
+#if ENABLE_RETINA_GL
+    const float scale = wxGetApp().plater()->get_current_canvas3D()->get_canvas_size().get_scale_factor();
+    em *= scale;
+#endif
+    const float sidebar_width = 45.0f * em;
     ImGui::SetNextWindowSizeConstraints({sidebar_width, 0.0f}, {sidebar_width, max_height});
     // Use the natively-rasterized legend font (11pt, crisp rendering)
     ImFont *legend_font = imgui.get_legend_font();
@@ -2944,8 +2951,8 @@ void GCodeViewer::render_legend(float &legend_height)
                     if (!visible)
                         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.3333f);
 
-                    // to avoid the tooltip to change size when moving the mouse
-                    imgui.set_requires_extra_frame();
+                    // preFlight: Removed set_requires_extra_frame() that fired on every
+                    // hover over legend items, creating a continuous render loop.
                 }
             }
 
@@ -4230,10 +4237,21 @@ void GCodeViewer::render_legend(float &legend_height)
                   [&imgui](ImGuiWindow &window, const ImVec2 &pos, float size)
                   { imgui.draw_icon(window, pos, size, ImGui::LegendToolMarker); });
 
+    // preFlight: When the legend content changes size (e.g. switching view types), ImGui
+    // needs several frames to recalculate the window layout. On any size transition, allow
+    // up to 5 extra frames for the layout to settle. The original code requested frames
+    // indefinitely while dirty, which caused an infinite render loop because the fixed-width
+    // constraint fights AlwaysAutoResize. The counter approach gives enough frames to resize
+    // without looping forever.
+    ImVec2 auto_fit_size = ImGui::CalcWindowNextAutoFitSize(ImGui::GetCurrentWindow());
     bool size_dirty = !ImGui::GetCurrentWindow()->ScrollbarY &&
-                      ImGui::CalcWindowNextAutoFitSize(ImGui::GetCurrentWindow()).x != ImGui::GetWindowWidth();
-    if (m_legend_resizer.dirty || size_dirty != m_legend_resizer.dirty)
+                      (auto_fit_size.x != ImGui::GetWindowWidth() || auto_fit_size.y != ImGui::GetWindowHeight());
+    static int s_resize_frames = 0;
+    if (size_dirty != m_legend_resizer.dirty)
+        s_resize_frames = 5;
+    if (s_resize_frames > 0)
     {
+        --s_resize_frames;
         wxGetApp().plater()->get_current_canvas3D()->set_as_dirty();
         wxGetApp().plater()->get_current_canvas3D()->request_extra_frame();
     }

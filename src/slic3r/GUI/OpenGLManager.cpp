@@ -29,6 +29,10 @@
 #include <wx/glcanvas.h>
 #include <wx/msgdlg.h>
 
+#ifdef __linux__
+#include <GL/glx.h>
+#endif
+
 #ifdef __APPLE__
 // Part of hack to remove crash when closing the application on OSX 10.9.5 when building against newer wxWidgets
 #include <wx/platinfo.h>
@@ -517,6 +521,55 @@ bool OpenGLManager::init_gl()
             (boost::contains(gl_info.get_renderer(), "Radeon") || boost::contains(gl_info.get_renderer(), "Custom")))
             s_force_power_of_two_textures = true;
 #endif // _WIN32
+
+        // preFlight: Enable VSync to cap framerate and reduce idle GPU usage.
+        // Without VSync, SwapBuffers() returns immediately and the render loop
+        // can run at hundreds of FPS when the canvas is dirty, burning GPU.
+#ifdef _WIN32
+        {
+            typedef BOOL(WINAPI * PFNWGLSWAPINTERVALEXTPROC)(int interval);
+            auto wglSwapIntervalEXT = reinterpret_cast<PFNWGLSWAPINTERVALEXTPROC>(
+                wglGetProcAddress("wglSwapIntervalEXT"));
+            if (wglSwapIntervalEXT)
+            {
+                wglSwapIntervalEXT(1);
+                BOOST_LOG_TRIVIAL(info) << "VSync enabled via wglSwapIntervalEXT";
+            }
+            else
+            {
+                BOOST_LOG_TRIVIAL(warning) << "VSync not available (wglSwapIntervalEXT not found)";
+            }
+        }
+#elif defined(__linux__)
+        {
+            bool vsync_set = false;
+            // Try Mesa extension first (Mesa, AMD open-source)
+            typedef int (*PFNGLXSWAPINTERVALMESAPROC)(int interval);
+            auto glXSwapIntervalMESA = reinterpret_cast<PFNGLXSWAPINTERVALMESAPROC>(
+                glXGetProcAddressARB(reinterpret_cast<const GLubyte *>("glXSwapIntervalMESA")));
+            if (glXSwapIntervalMESA)
+            {
+                glXSwapIntervalMESA(1);
+                BOOST_LOG_TRIVIAL(info) << "VSync enabled via glXSwapIntervalMESA";
+                vsync_set = true;
+            }
+            // Fallback to SGI extension (NVIDIA proprietary)
+            if (!vsync_set)
+            {
+                typedef int (*PFNGLXSWAPINTERVALSGIPROC)(int interval);
+                auto glXSwapIntervalSGI = reinterpret_cast<PFNGLXSWAPINTERVALSGIPROC>(
+                    glXGetProcAddressARB(reinterpret_cast<const GLubyte *>("glXSwapIntervalSGI")));
+                if (glXSwapIntervalSGI)
+                {
+                    glXSwapIntervalSGI(1);
+                    BOOST_LOG_TRIVIAL(info) << "VSync enabled via glXSwapIntervalSGI";
+                    vsync_set = true;
+                }
+            }
+            if (!vsync_set)
+                BOOST_LOG_TRIVIAL(warning) << "VSync not available on Linux";
+        }
+#endif
     }
 
     return true;

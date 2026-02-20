@@ -101,8 +101,7 @@ private:
     bool m_has_sliced_object{false};
     bool m_slice_button_pressed{false};
     bool m_slice_button_enabled{true};
-    bool m_slice_tab_enabled{true}; // Whether current tab allows slicing
-    bool m_show_dropdown{false};    // Dropdown only shown in Export mode when printer connected
+    bool m_show_dropdown{false}; // Dropdown only shown in Export mode when printer connected
 
     wxColour m_color_bg_normal;
     wxColour m_color_bg_hover;

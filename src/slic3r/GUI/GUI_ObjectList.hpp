@@ -117,6 +117,9 @@ private:
     SELECTION_MODE m_selection_mode{smUndef};
     int m_selected_layers_range_idx{-1};
     int m_fixed_columns_width{0}; // Sum of fixed column widths for dynamic Name column sizing
+    int m_print_col_width{0};
+    int m_extruder_col_width{0};
+    int m_editing_col_width{0};
 
     Clipboard m_clipboard;
 #ifdef __WXMSW__

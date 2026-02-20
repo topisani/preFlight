@@ -21,11 +21,7 @@
 #include <functional>
 #include <boost/filesystem.hpp>
 
-#ifndef __linux__
 void sys_color_changed_menu(wxMenu *menu);
-#else
-inline void sys_color_changed_menu(wxMenu * /* menu */) {}
-#endif // no __linux__
 
 #ifndef __APPLE__
 // Caching wxAcceleratorEntries to use them during mainframe creation
@@ -60,6 +56,9 @@ wxMenuItem *append_menu_check_item(
 void enable_menu_item(wxUpdateUIEvent &evt, std::function<bool()> const cb_condition, wxMenuItem *item, wxWindow *win);
 
 void set_menu_item_bitmap(wxMenuItem *item, const std::string &icon_name);
+
+// Look up the original SVG icon name for a menu item by ID (from msw_menuitem_bitmaps cache)
+std::string get_menuitem_icon_name(int id);
 
 class wxDialog;
 

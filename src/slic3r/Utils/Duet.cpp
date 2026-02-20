@@ -181,47 +181,53 @@ bool Duet::upload(PrintHostUpload upload_data, ProgressFn prorgess_fn, ErrorFn e
 Duet::ConnectionType Duet::connect(wxString &msg) const
 {
     auto res = ConnectionType::error;
+
+    // RRF fallback - used when DSF connection fails or returns an unexpected response
+    auto try_rrf = [&]()
+    {
+        auto rrfUrl = get_connect_url(false);
+        auto rrfHttp = Http::get(std::move(rrfUrl));
+        rrfHttp
+            .on_error(
+                [&](std::string body, std::string error, unsigned status)
+                {
+                    BOOST_LOG_TRIVIAL(error)
+                        << boost::format("Duet: Error connecting: %1%, HTTP %2%, body: `%3%`") % error % status % body;
+                    msg = format_error(body, error, status);
+                })
+            .on_complete(
+                [&](std::string body, unsigned)
+                {
+                    BOOST_LOG_TRIVIAL(debug) << boost::format("Duet: Got: %1%") % body;
+
+                    int err_code = get_err_code_from_body(body);
+                    switch (err_code)
+                    {
+                    case 0:
+                        res = ConnectionType::rrf;
+                        break;
+                    case 1:
+                        msg = format_error(body, L("Wrong password"), 0);
+                        break;
+                    case 2:
+                        msg = format_error(body, L("Could not get resources to create a new connection"), 0);
+                        break;
+                    default:
+                        msg = format_error(body, L("Unknown error occured"), 0);
+                        break;
+                    }
+                })
+            .perform_sync();
+    };
+
     auto url = get_connect_url(true); // DSF first
 
     auto http = Http::get(std::move(url));
     http.on_error(
             [&](std::string body, std::string error, unsigned status)
             {
-                // DSF failed — fall back to RRF
-                auto rrfUrl = get_connect_url(false);
-                auto rrfHttp = Http::get(std::move(rrfUrl));
-                rrfHttp
-                    .on_error(
-                        [&](std::string body, std::string error, unsigned status)
-                        {
-                            BOOST_LOG_TRIVIAL(error)
-                                << boost::format("Duet: Error connecting: %1%, HTTP %2%, body: `%3%`") % error %
-                                       status % body;
-                            msg = format_error(body, error, status);
-                        })
-                    .on_complete(
-                        [&](std::string body, unsigned)
-                        {
-                            BOOST_LOG_TRIVIAL(debug) << boost::format("Duet: Got: %1%") % body;
-
-                            int err_code = get_err_code_from_body(body);
-                            switch (err_code)
-                            {
-                            case 0:
-                                res = ConnectionType::rrf;
-                                break;
-                            case 1:
-                                msg = format_error(body, L("Wrong password"), 0);
-                                break;
-                            case 2:
-                                msg = format_error(body, L("Could not get resources to create a new connection"), 0);
-                                break;
-                            default:
-                                msg = format_error(body, L("Unknown error occured"), 0);
-                                break;
-                            }
-                        })
-                    .perform_sync();
+                // DSF failed at HTTP level - fall back to RRF
+                try_rrf();
             })
         .on_complete(
             [&](std::string body, unsigned)
@@ -238,10 +244,9 @@ Duet::ConnectionType Duet::connect(wxString &msg) const
                 }
                 catch (const std::exception &)
                 {
-                    BOOST_LOG_TRIVIAL(error)
-                        << "Failed to parse sessionKey from Duet reply to Connect request: " << body;
-                    msg = format_error(body, L("Failed to parse a Connect reply"), 0);
-                    res = ConnectionType::error;
+                    // DSF returned HTTP 200 but not valid DSF JSON - fall back to RRF
+                    BOOST_LOG_TRIVIAL(info) << "DSF connect returned non-JSON response, falling back to RRF: " << body;
+                    try_rrf();
                 }
             })
         .perform_sync();

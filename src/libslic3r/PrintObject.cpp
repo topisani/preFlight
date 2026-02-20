@@ -520,7 +520,13 @@ void PrintObject::clear_fills()
     // these cached structures become invalid but were never cleared, causing non-deterministic
     // crashes (silent app closure) due to geometry mismatches.
     // Root cause of: Grid/Triangles/Stars/Cubic crashes on reslice with different density.
+    // preFlight: Apple libc++ finds '= {}' ambiguous for pair<unique_ptr<..., CustomDeleter>, ...>
+#ifdef __APPLE__
+    m_adaptive_fill_octrees.first.reset();
+    m_adaptive_fill_octrees.second.reset();
+#else
     m_adaptive_fill_octrees = {};
+#endif
     m_lightning_generator.reset();
 }
 

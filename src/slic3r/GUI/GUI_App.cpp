@@ -66,6 +66,10 @@
 #include <wx/graphics.h>
 #include <wx/fontutil.h>
 #include <wx/weakref.h>
+#ifdef __APPLE__
+#include <wx/renderer.h>
+#include <wx/treectrl.h>
+#endif
 
 #include <nanosvg/nanosvg.h>
 #include <nanosvg/nanosvgrast.h>
@@ -259,16 +263,20 @@ public:
             gtk_widget_set_visual(widget, visual);
             gtk_widget_set_app_paintable(widget, TRUE);
         }
+#elif defined(__WXOSX__)
+        // preFlight: Make the window non-opaque so Quartz composites alpha correctly
+        Slic3r::GUI::mac_set_window_transparent(GetHandle());
 #endif
 
         Bind(wxEVT_PAINT,
              [this](wxPaintEvent &)
              {
                  wxAutoBufferedPaintDC dc(this);
-#ifdef __WXGTK3__
-                 if (m_has_alpha)
+#if defined(__WXGTK3__) || defined(__WXOSX__)
+                 // Clear to fully transparent, then composite the bitmap over it.
+                 // GTK3 requires an RGBA visual (set above); macOS Quartz supports
+                 // alpha compositing natively once the window is non-opaque.
                  {
-                     // Clear to fully transparent
                      auto gc = wxGraphicsContext::Create(dc);
                      if (gc)
                      {
@@ -281,8 +289,7 @@ public:
                          delete gc;
                      }
                  }
-                 else
-#endif
+#else
                  {
                      // Fallback: dark background
                      dc.SetBackground(wxBrush(wxColour(34, 34, 34)));
@@ -290,8 +297,25 @@ public:
                      if (m_bitmap.IsOk())
                          dc.DrawBitmap(m_bitmap, 0, 0, true);
                  }
+#endif
              });
 #endif
+
+        // Hide the window instantly on close to prevent the layered window's
+        // transparent regions from briefly flashing as opaque during destruction.
+        Bind(wxEVT_CLOSE_WINDOW,
+             [this](wxCloseEvent &evt)
+             {
+#ifdef __WXMSW__
+                 // For WS_EX_LAYERED windows, setting alpha to 0 hides instantly
+                 // without any repaint artifacts from window destruction
+                 HWND hwnd = (HWND) GetHandle();
+                 if (hwnd)
+                     SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA);
+#endif
+                 Hide();
+                 evt.Skip(); // Allow normal destruction to proceed
+             });
 
         // Set up auto-close timer if timeout specified
         if (milliseconds > 0)
@@ -1169,6 +1193,42 @@ void GUI_App::init_single_instance_checker(const std::string &name, const std::s
                                                                           boost::nowide::widen(path));
 }
 
+#ifdef __APPLE__
+// preFlight: Custom renderer that draws a 1px outline border for selected items
+// instead of the default macOS blue filled rectangle.  Installed via
+// wxRendererNative::Set() in on_init_inner().  Only affects wxTreeCtrl
+// instances; all other controls fall through to the default renderer.
+class preFlightRendererNative : public wxDelegateRendererNative
+{
+public:
+    preFlightRendererNative() : wxDelegateRendererNative(wxRendererNative::GetDefault()) {}
+
+    void DrawItemSelectionRect(wxWindow *win, wxDC &dc, const wxRect &rect, int flags = 0) override
+    {
+        if (!dynamic_cast<wxTreeCtrl *>(win))
+        {
+            m_rendererNative.DrawItemSelectionRect(win, dc, rect, flags);
+            return;
+        }
+
+        if (!(flags & wxCONTROL_SELECTED))
+            return;
+
+        // 1px outline, white in dark mode / black in light mode (matches Windows).
+        // Fill with the actual tree background color to clear the default blue.
+        // NOTE: GetBackgroundColour() returns wrong value on macOS generic tree,
+        // so use the UIColors values directly.
+        bool isDark = mac_dark_mode();
+        wxColour border = isDark ? *wxWHITE : *wxBLACK;
+        wxColour bgCol = isDark ? wxColour(22, 27, 34) : wxColour(250, 248, 244);
+
+        wxDCPenChanger setPen(dc, wxPen(border, 1));
+        wxDCBrushChanger setBrush(dc, wxBrush(bgCol));
+        dc.DrawRectangle(rect);
+    }
+};
+#endif // __APPLE__
+
 bool GUI_App::OnInit()
 {
     try
@@ -1357,6 +1417,15 @@ bool GUI_App::on_init_inner()
     // initialize label colors and fonts
     init_ui_colours();
     init_fonts();
+
+#ifdef __APPLE__
+    // preFlight: Install custom renderer for tree selection outlines.
+    // CRITICAL: Must call Get() first to trigger wxRendererPtr lazy initialization.
+    // Without this, the first Get() after Set() calls DoInit() which resets the
+    // internal pointer to NULL, silently discarding our custom renderer.
+    (void) wxRendererNative::Get();
+    wxRendererNative::Set(new preFlightRendererNative());
+#endif
 
     std::string older_data_dir_path;
     if (m_app_conf_exists)
@@ -2354,6 +2423,7 @@ void GUI_App::UpdateDVCDarkUI(wxDataViewCtrl *dvc, bool highlited /* = false*/)
     // Style the column header to match preFlight's dark theme via GTK CSS.
     // GTK3 header buttons are children of the GtkTreeView and require screen-level
     // CSS to override their theme styling. Applied once via static guard.
+#ifdef __linux__
     {
         static bool s_dvc_css_applied = false;
         if (!s_dvc_css_applied)
@@ -2387,6 +2457,7 @@ void GUI_App::UpdateDVCDarkUI(wxDataViewCtrl *dvc, bool highlited /* = false*/)
             g_object_unref(provider);
         }
     }
+#endif // __linux__
 #endif
 }
 
@@ -3848,7 +3919,8 @@ void GUI_App::MacOpenURL(const wxString &url)
     }
     else if (boost::starts_with(narrow_url, "preflight://login"))
     {
-        plater()->get_user_account()->on_login_code_recieved(std::move(narrow_url));
+        // preFlight: UserAccount system removed — login URLs not supported
+        BOOST_LOG_TRIVIAL(warning) << "MacOpenURL: login URL received but UserAccount is not available: " << url;
     }
     else
     {
@@ -4455,11 +4527,12 @@ void GUI_App::on_version_read(wxCommandEvent &evt)
         }
         return;
     }
-    // preFlight: user-triggered checks get the full modal dialog; automatic/periodic
-    // checks get a non-intrusive toast notification (de-duplicated per version)
-    if (m_app_updater->get_triggered_by_user())
+    // preFlight: user-triggered checks and the first automatic check (startup)
+    // get the full modal dialog.  Subsequent periodic checks get a toast notification.
+    if (m_app_updater->get_triggered_by_user() || !m_startup_update_shown)
     {
-        app_updater(true);
+        m_startup_update_shown = true;
+        app_updater(m_app_updater->get_triggered_by_user());
     }
     else
     {

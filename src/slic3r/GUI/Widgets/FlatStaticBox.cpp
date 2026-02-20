@@ -5,6 +5,7 @@
 #include "FlatStaticBox.hpp"
 #include "../GUI_App.hpp"
 #include "UIColors.hpp"
+#include <wx/dcbuffer.h>
 
 #ifdef _WIN32
 #include "../DarkMode.hpp"
@@ -12,6 +13,8 @@
 #pragma comment(lib, "uxtheme.lib")
 #elif defined(__WXGTK__)
 #include <gtk/gtk.h>
+#elif defined(__WXOSX__)
+#include "../../Utils/MacDarkMode.hpp"
 #endif
 
 namespace Slic3r
@@ -263,6 +266,12 @@ bool FlatStaticBox::Create(wxWindow *parent, wxWindowID id, const wxString &labe
         // Connect our handler BEFORE the default class handler
         g_signal_connect(gtkWidget, "draw", G_CALLBACK(flatstaticbox_on_draw), this);
     }
+#elif defined(__WXOSX__)
+    // preFlight: Make the native NSBox invisible — we draw everything ourselves
+    // in OnPaintMac(), just like GTK draws via Cairo.
+    mac_set_staticbox_transparent(GetHandle());
+    SetBackgroundStyle(wxBG_STYLE_PAINT);
+    Bind(wxEVT_PAINT, &FlatStaticBox::OnPaintMac, this);
 #endif
 
     return true;
@@ -293,13 +302,26 @@ void FlatStaticBox::UpdateTheme()
     {
         SetBackgroundColour(UIColors::InputBackgroundDark());
         SetForegroundColour(UIColors::InputForegroundDark());
-        m_borderColor = wxColour(255, 255, 255); // white — matches LabeledBorderPanel
+        m_borderColor = UIColors::SectionBorderDark();
     }
     else
     {
         SetBackgroundColour(UIColors::InputBackgroundLight());
         SetForegroundColour(UIColors::InputForegroundLight());
-        // m_borderColor default (0,0,0) is correct for light mode
+        m_borderColor = UIColors::SectionBorderLight();
+    }
+#elif defined(__WXOSX__)
+    // preFlight: macOS — NSBox is made transparent in Create().
+    // All visual rendering is done by OnPaintMac().
+    if (wxGetApp().dark_mode())
+    {
+        m_borderColor = UIColors::SectionBorderDark();
+        SetForegroundColour(UIColors::LabelDefaultDark());
+    }
+    else
+    {
+        m_borderColor = UIColors::SectionBorderLight();
+        SetForegroundColour(UIColors::InputForegroundLight());
     }
 #endif
 }
@@ -309,6 +331,93 @@ void FlatStaticBox::SysColorsChanged()
     UpdateTheme();
     Refresh();
 }
+
+#ifdef __WXOSX__
+// preFlight: macOS custom paint — draws border with title gap and label text,
+// mirroring the GTK Cairo implementation in flatstaticbox_on_draw().
+void FlatStaticBox::OnPaintMac(wxPaintEvent &evt)
+{
+    // Use wxAutoBufferedPaintDC for flicker-free rendering
+    wxAutoBufferedPaintDC dc(this);
+
+    // On macOS, wxPaintDC for wxStaticBox covers the client area, which may be
+    // smaller than GetSize(). Use the DC's actual drawable area to ensure borders
+    // at the right/bottom edges are visible.
+    int w, h;
+    dc.GetSize(&w, &h);
+    if (w <= 0 || h <= 0)
+        return;
+
+    int borderW = std::max(1, wxGetApp().em_unit() / 10);
+
+    // Measure text height to determine border start Y
+    wxFont boldFont = GetFont();
+    boldFont.SetWeight(wxFONTWEIGHT_BOLD);
+    dc.SetFont(boldFont);
+    int textH = dc.GetCharHeight();
+    int borderY = textH / 2;
+
+    // Step 1: Fill entire widget with parent background
+    wxWindow *parentWin = GetParent();
+    wxColour bgColor = parentWin ? parentWin->GetBackgroundColour() : GetBackgroundColour();
+    if (!bgColor.IsOk())
+        bgColor = wxSystemSettings::GetColour(wxSYS_COLOUR_BTNFACE);
+    dc.SetBrush(wxBrush(bgColor));
+    dc.SetPen(*wxTRANSPARENT_PEN);
+    dc.DrawRectangle(0, 0, w, h);
+
+    // Step 2: Measure label for top border gap
+    wxString labelStr = GetLabel();
+    bool hasLabel = !labelStr.IsEmpty();
+    int labelX = 0, labelEndX = 0;
+    int labelTextW = 0, labelTextH = 0;
+    if (hasLabel)
+    {
+        dc.GetTextExtent(labelStr, &labelTextW, &labelTextH);
+        int labelIndent = (wxGetApp().em_unit() * 8) / 10; // 8px at 100%
+        int labelPad = (wxGetApp().em_unit() * 4) / 10;    // 4px padding each side
+        labelX = labelIndent;
+        labelEndX = labelX + labelPad + labelTextW + labelPad;
+    }
+
+    // Step 3: Draw flat border with gap for label
+    if (m_drawFlatBorder && m_borderColor.IsOk())
+    {
+        dc.SetBrush(wxBrush(m_borderColor));
+        dc.SetPen(*wxTRANSPARENT_PEN);
+
+        // Left
+        dc.DrawRectangle(0, borderY, borderW, h - borderY);
+        // Bottom
+        dc.DrawRectangle(0, h - borderW, w, borderW);
+        // Right
+        dc.DrawRectangle(w - borderW, borderY, borderW, h - borderY);
+
+        // Top — with gap for label text
+        if (hasLabel && labelEndX > 0)
+        {
+            dc.DrawRectangle(0, borderY, labelX, borderW);                // Left segment
+            dc.DrawRectangle(labelEndX, borderY, w - labelEndX, borderW); // Right segment
+        }
+        else
+        {
+            dc.DrawRectangle(0, borderY, w, borderW); // Full top line
+        }
+    }
+
+    // Step 4: Draw label text
+    if (hasLabel)
+    {
+        int labelPad = (wxGetApp().em_unit() * 4) / 10;
+        wxColour fgColor = GetForegroundColour();
+        if (!fgColor.IsOk())
+            fgColor = *wxWHITE;
+        dc.SetTextForeground(fgColor);
+        dc.SetFont(boldFont);
+        dc.DrawText(labelStr, labelX + labelPad, 0);
+    }
+}
+#endif // __WXOSX__
 
 #ifdef _WIN32
 WXLRESULT FlatStaticBox::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam)

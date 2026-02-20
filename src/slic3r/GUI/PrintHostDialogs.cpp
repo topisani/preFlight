@@ -191,6 +191,29 @@ PrintHostSendDialog::PrintHostSendDialog(const fs::path &path, PrintHostPostUplo
                            });
     }
 
+    // preFlight: Add "Reset Upload Preferences" button between action buttons and Cancel
+    // Only visible when user has previously used "Remember my choice" on an upload dialog
+    {
+        bool has_overwrite_pref = app_config->has("upload_host_always_overwrite") &&
+                                  app_config->get("upload_host_always_overwrite") == "always";
+        bool has_tab_switch_pref = app_config->has("switch_to_printer_tab_after_upload") &&
+                                   app_config->get("switch_to_printer_tab_after_upload") != "ask";
+        if (has_overwrite_pref || has_tab_switch_pref)
+        {
+            auto *btn_reset = new wxButton(this, wxID_ANY, _L("Reset Upload Preferences"));
+            wxGetApp().SetWindowVariantForButton(btn_reset);
+            btn_sizer->Add(btn_reset, 0, wxLEFT | wxALIGN_CENTER_VERTICAL, GetScaledHorizSpacing());
+            btn_reset->Bind(wxEVT_BUTTON,
+                            [btn_reset](wxCommandEvent &)
+                            {
+                                wxGetApp().app_config->erase("", "upload_host_always_overwrite");
+                                wxGetApp().app_config->erase("", "switch_to_printer_tab_after_upload");
+                                btn_reset->Hide();
+                                btn_reset->GetParent()->Layout();
+                            });
+        }
+    }
+
     add_button(wxID_CANCEL);
     finalize();
 
@@ -562,9 +585,19 @@ void PrintHostQueueDialog::on_progress(Event &evt)
             }
             else if (pref != "never")
             {
-                RichMessageDialogBase dlg(this, _L("Upload complete. Would you like to switch to the Printer tab?"),
+                RichMessageDialogBase dlg(mainframe,
+                                          _L("Upload complete. Would you like to switch to the Printer tab?"),
                                           _L("Upload Complete"), wxYES_NO | wxICON_QUESTION);
                 dlg.ShowCheckBox(_L("Remember my choice"));
+
+                // Ensure dialog is wide enough for the single-line message
+                wxSize sz = dlg.GetSize();
+                int min_w = wxGetApp().em_unit() * 50;
+                if (sz.GetWidth() < min_w)
+                {
+                    dlg.SetSize(min_w, sz.GetHeight());
+                    dlg.CenterOnParent();
+                }
 
                 if (dlg.ShowModal() == wxID_YES)
                 {

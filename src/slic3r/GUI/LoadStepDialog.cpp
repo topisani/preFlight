@@ -129,9 +129,9 @@ void LoadStepDialog::add_params(wxSizer *sizer)
                        [&, this](wxEvent &)
                        {
                            enable_customs(true);
-#ifdef __linux__
+#ifndef _WIN32
                            this->Fit();
-#endif // __linux__
+#endif
                            m_params.linear = string_to_double_decimal_point(
                                m_linear_precision_val->GetValue().ToStdString());
                            m_params.angle = string_to_double_decimal_point(

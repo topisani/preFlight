@@ -198,6 +198,7 @@ private:
     std::unique_ptr<AppUpdater> m_app_updater;
     wxTimer *m_version_check_timer{nullptr}; // preFlight: periodic version check (every 4 hours)
     std::string m_version_last_notified;     // preFlight: prevents repeat notifications for same version
+    bool m_startup_update_shown{false};      // preFlight: first update-available check shows full dialog
     std::unique_ptr<wxSingleInstanceChecker> m_single_instance_checker;
     std::unique_ptr<Downloader> m_downloader;
 
@@ -349,7 +350,7 @@ public:
                                           bool force_remember_choice = true, int flags = 0);
     bool open_login_browser_with_dialog(const wxString &url, wxWindow *parent = nullptr, int flags = 0);
 #ifdef __APPLE__
-    void OSXStoreOpenFiles(const wxArrayString &files) override;
+    void OSXStoreOpenFiles(const wxArrayString &files); // not virtual in wxWidgets base — cannot use override
     // wxWidgets override to get an event on open files.
     void MacOpenFiles(const wxArrayString &fileNames) override;
     void MacOpenURL(const wxString &url) override;

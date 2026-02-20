@@ -3,18 +3,23 @@
 #/|/
 #/|/ Released under AGPLv3 or higher
 #/|/
-# Builds preFlight dependencies for Linux.
+# Builds preFlight dependencies.
 # Usage: ./build_deps.sh [options]
 #   -clean    Remove existing deps build and rebuild from scratch
-#   -preset   CMake preset to use (default: "default", also: "no-occt")
+#   -preset   CMake preset override (auto-detected if not specified)
+#
+# Platform auto-detection:
+#   macOS arm64  → mac_universal_arm
+#   macOS x86_64 → mac_universal_x86
+#   Linux        → default
 #
 # Dependencies are installed to deps/build-<preset>/destdir/usr/local
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PRESET="default"
 CLEAN=0
+PRESET=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -22,7 +27,7 @@ while [[ $# -gt 0 ]]; do
         -clean)  CLEAN=1 ;;
         -preset) PRESET="$2"; shift ;;
         -h|-help|--help)
-            sed -n '5,9p' "$0"
+            sed -n '5,16p' "$0"
             exit 0
             ;;
         *) echo "Unknown option: $1"; exit 1 ;;
@@ -30,14 +35,32 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+# Auto-detect preset if not specified
+if [[ -z "$PRESET" ]]; then
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        if [[ "$(uname -m)" == "arm64" ]]; then
+            PRESET="mac_universal_arm"
+        else
+            PRESET="mac_universal_x86"
+        fi
+    else
+        PRESET="default"
+    fi
+fi
+
 DEPS_DIR="$SCRIPT_DIR/deps"
 BUILD_DIR="$DEPS_DIR/build-${PRESET}"
 DESTDIR="$BUILD_DIR/destdir/usr/local"
 DEPS_PATH_FILE="$DEPS_DIR/build/.DEPS_PATH.txt"
 START_TIME=$SECONDS
 
+PLATFORM="$(uname -s)"
+if [[ "$PLATFORM" == "Darwin" ]]; then
+    PLATFORM="macOS ($(uname -m))"
+fi
+
 echo "**********************************************************************"
-echo "** preFlight Dependency Build (Linux)"
+echo "** preFlight Dependency Build ($PLATFORM)"
 echo "** Preset: $PRESET"
 echo "** Output: $DESTDIR"
 echo "**********************************************************************"

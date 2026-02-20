@@ -63,6 +63,12 @@ protected:
     virtual WXLRESULT MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam) override;
 #endif
 
+#ifdef __WXOSX__
+    // preFlight: macOS custom paint handler — draws borders and title text
+    // since the native NSBox is made transparent.
+    void OnPaintMac(wxPaintEvent &evt);
+#endif
+
 private:
     wxColour m_borderColor{0, 0, 0}; // Black for light mode
     bool m_drawFlatBorder{true};

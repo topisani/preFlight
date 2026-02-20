@@ -63,6 +63,12 @@ bool StaticBox::Create(wxWindow *parent, wxWindowID id, const wxPoint &pos, cons
     if (style & wxBORDER_NONE)
         border_width = 0;
     wxWindow::Create(parent, id, pos, size, style);
+#ifdef __WXOSX__
+    // preFlight: Suppress native background erase on macOS so doRender() has full
+    // control.  Without this, the native NSView erase color bleeds through the
+    // Retina deflation gap (1px border between outer fill and inner content).
+    SetBackgroundStyle(wxBG_STYLE_PAINT);
+#endif
     state_handler.attach({&border_color, &background_color, &background_color2});
     state_handler.update_binds();
     //    SetBackgroundColour(GetParentBackgroundColor(parent));
@@ -165,9 +171,26 @@ void StaticBox::doRender(wxDC &dc)
         {
             wxRect rc(0, 0, size.x, size.y);
 #ifdef __WXOSX__
-            // On Retina displays all controls are cut - deflate by scaled amount
+            // preFlight: On macOS Retina, the drawing rect is deflated to avoid
+            // clipping.  Fill the FULL rect with the parent/theme background first
+            // so the native macOS background doesn't bleed through the gap.
             if (dc.GetContentScaleFactor() > 1.)
+            {
+                bool is_dark = Slic3r::GUI::wxGetApp().dark_mode();
+                // preFlight: StateColor::Disabled (1<<16) is a matching rule, not a state flag.
+                // The actual disabled state is the ABSENCE of the Enabled bit (1) in states.
+                bool is_disabled = (states & (int) StateColor::Enabled) == 0;
+                wxColour bg_clr;
+                if (is_disabled)
+                    bg_clr = is_dark ? UIColors::InputBackgroundDisabledDark()
+                                     : UIColors::InputBackgroundDisabledLight();
+                else
+                    bg_clr = is_dark ? UIColors::ContentBackgroundDark() : UIColors::InputBackgroundLight();
+                dc.SetBrush(wxBrush(bg_clr));
+                dc.SetPen(wxPen(bg_clr));
+                dc.DrawRectangle(rc);
                 rc.Deflate(GetScaledDeflate(), GetScaledDeflate());
+            }
 #endif //__WXOSX__
 
             if (radius > 0.)
@@ -176,7 +199,7 @@ void StaticBox::doRender(wxDC &dc)
                 // Fill corners with theme-appropriate background color
                 // Must respect disabled state - use parent's background or state-aware color
                 bool is_dark = Slic3r::GUI::wxGetApp().dark_mode();
-                bool is_disabled = (states & (int) StateColor::Disabled) != 0;
+                bool is_disabled = (states & (int) StateColor::Enabled) == 0;
                 wxColour bg_clr;
                 if (is_disabled)
                     bg_clr = is_dark ? UIColors::InputBackgroundDisabledDark()

@@ -41,8 +41,8 @@ static const std::string MODEL_PREFIX = "model:";
 // are phased out, then we will revert to the original name.
 // For 2.6.0-alpha1 we have switched back to the original. The file should contain data for AppUpdater.cpp
 // Version check URL removed
-static const std::string VERSION_CHECK_URL = "https://pkg.ooze.bot/preFlight.version";
-static const std::string RELEASE_NOTES_URL = "https://pkg.ooze.bot/preFlight.notes";
+static const std::string VERSION_CHECK_URL = "http://pkg.ooze.bot/preFlight.version";
+static const std::string RELEASE_NOTES_URL = "http://pkg.ooze.bot/preFlight.notes";
 // Url to index archive zip that contains latest indicies
 // Index archive URL removed
 static const std::string INDEX_ARCHIVE_URL = ""; // Disabled for preFlight
@@ -266,7 +266,6 @@ void AppConfig::set_defaults()
     erase("", "object_settings_size");
 
     // preFlight: These settings are hardcoded and cannot be changed by the user
-    set("background_processing", "0");    // Force disabled
     set("show_splash_screen", "1");       // Force enabled
     set("show_collapse_button", "0");     // Force disabled
     set("color_manipulation_panel", "0"); // Force disabled

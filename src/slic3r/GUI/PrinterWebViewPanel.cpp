@@ -59,9 +59,7 @@ void PrinterWebViewPanel::LoadURL(const wxString &url)
 
     m_current_url = url;
 
-#ifdef __linux__
     m_needs_initial_refresh = true;
-#endif
 
     // Build URL with authentication if needed
     wxString auth_url = BuildAuthenticatedURL(url);
@@ -145,10 +143,9 @@ wxString PrinterWebViewPanel::GetCurrentURL() const
 
 void PrinterWebViewPanel::OnBecameVisible()
 {
-#ifdef __linux__
-    // WebKit2GTK: some printer interfaces (e.g. Mainsail) show a stale
-    // read-only view on first load.  Re-navigating to the same URL once
-    // the panel is visible (equivalent to the user pressing F5) fixes it.
+    // Some printer interfaces (e.g. Mainsail) show a stale read-only view on
+    // first load.  Re-navigating to the same URL once the panel is visible
+    // (equivalent to the user pressing F5) fixes it.
     if (m_needs_initial_refresh && m_webview && !m_current_url.empty())
     {
         m_needs_initial_refresh = false;
@@ -162,7 +159,6 @@ void PrinterWebViewPanel::OnBecameVisible()
                 }
             });
     }
-#endif
 }
 
 void PrinterWebViewPanel::sys_color_changed()

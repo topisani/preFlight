@@ -221,6 +221,15 @@ void SpinInputBase::SysColorsChanged()
     SetBackgroundColour(bg_normal);
     SetForegroundColour(fg_normal);
 
+#ifdef __APPLE__
+    // preFlight: Update label color (e.g. "mm" unit text) for current theme.
+    // Constructor defaults are light-mode colors; macOS needs explicit update.
+    wxColour lbl_clr = is_dark ? UIColors::SecondaryTextDark() : UIColors::SecondaryTextLight();
+    wxColour lbl_dis = is_dark ? wxColour(0x6E, 0x76, 0x81) : wxColour(0x90, 0x90, 0x90);
+    label_color = StateColor(std::make_pair(lbl_dis, (int) StateColor::Disabled),
+                             std::make_pair(lbl_clr, (int) StateColor::Normal));
+#endif
+
     // Apply to internal text control using ThemedTextCtrl for reliable Windows color handling
     if (text_ctrl)
     {
@@ -236,9 +245,19 @@ void SpinInputBase::SysColorsChanged()
     }
 
     if (button_inc)
+    {
         button_inc->Rescale();
+        // preFlight: Rescale() resets radius/border_width via StaticBox::msw_rescale().
+        // SpinInput arrow buttons must remain flat (no rounded corners, no border).
+        button_inc->SetCornerRadius(0);
+        button_inc->SetBorderWidth(0);
+    }
     if (button_dec)
+    {
         button_dec->Rescale();
+        button_dec->SetCornerRadius(0);
+        button_dec->SetBorderWidth(0);
+    }
 }
 
 void SpinInputBase::SetBorderColor(StateColor const &color)
@@ -315,6 +334,45 @@ bool SpinInputBase::Enable(bool enable)
         GetEventHandler()->ProcessEvent(e);
 
         // Now refresh with the updated state
+        Refresh();
+    }
+    return changed;
+#elif defined(__APPLE__)
+    // preFlight: macOS — same approach as Windows. Disabled native NSTextField ignores
+    // our themed colors and shows the system disabled appearance. Keep text_ctrl enabled
+    // but read-only, and set colors explicitly via ThemedTextCtrl.
+    bool changed = wxWindowBase::IsThisEnabled() != enable;
+    wxWindow::Enable(enable);
+
+    if (changed && text_ctrl)
+    {
+        text_ctrl->SetEditable(enable);
+
+        bool dark = Slic3r::GUI::wxGetApp().dark_mode();
+        wxColour bg_color, fg_color;
+        if (enable)
+        {
+            bg_color = dark ? UIColors::InputBackgroundDark() : UIColors::InputBackgroundLight();
+            fg_color = dark ? UIColors::InputForegroundDark() : UIColors::InputForegroundLight();
+        }
+        else
+        {
+            bg_color = dark ? UIColors::InputBackgroundDisabledDark() : UIColors::InputBackgroundDisabledLight();
+            fg_color = dark ? UIColors::InputForegroundDisabledDark() : UIColors::InputForegroundDisabledLight();
+        }
+        text_ctrl->SetThemedColors(bg_color, fg_color);
+
+        button_inc->Enable(enable);
+        button_dec->Enable(enable);
+
+        wxCommandEvent e(EVT_ENABLE_CHANGED);
+        e.SetEventObject(this);
+        GetEventHandler()->ProcessEvent(e);
+
+        // preFlight: Explicitly refresh buttons — macOS doesn't always repaint child
+        // views when the parent is refreshed.
+        button_inc->Refresh();
+        button_dec->Refresh();
         Refresh();
     }
     return changed;
@@ -443,6 +501,12 @@ void SpinInputBase::messureSize()
     const int small_offset = GetSmallOffset();
 
     wxSize btnSize = {btn_base_width, (size.y - btn_height_offset) / 2};
+#ifdef __APPLE__
+    // preFlight: On macOS, child NSViews render on top of the parent's drawing.
+    // Shrink buttons so they don't overlap the SpinInput's border at the edges.
+    if (border_width > 0)
+        btnSize.y = std::max(1, btnSize.y - border_width);
+#endif
     btnSize.x = btnSize.x * btnSize.y / 10;
 
     const double scale = this->GetContentScaleFactor();
@@ -522,6 +586,17 @@ void SpinInput::Create(wxWindow *parent, wxString text, wxString label, const wx
     SetForegroundColour(fg_color);
     // Set themed colors on internal text control for reliable Windows color handling
     text_ctrl->SetThemedColors(bg_color, fg_color);
+
+#ifdef __APPLE__
+    // preFlight: Constructor label_color defaults are light-mode. Update for dark mode.
+    if (is_dark)
+    {
+        label_color = StateColor(std::make_pair(wxColour(0x6E, 0x76, 0x81), (int) StateColor::Disabled),
+                                 std::make_pair(UIColors::SecondaryTextDark(), (int) StateColor::Normal));
+        text_color = StateColor(std::make_pair(wxColour(0x6E, 0x76, 0x81), (int) StateColor::Disabled),
+                                std::make_pair(fg_color, (int) StateColor::Normal));
+    }
+#endif
 
     long initialFromText;
     if (text.ToLong(&initialFromText))
@@ -715,6 +790,17 @@ void SpinInputDouble::Create(wxWindow *parent, wxString text, wxString label, co
     SetForegroundColour(fg_color);
     // Set themed colors on internal text control for reliable Windows color handling
     text_ctrl->SetThemedColors(bg_color, fg_color);
+
+#ifdef __APPLE__
+    // preFlight: Constructor label_color defaults are light-mode. Update for dark mode.
+    if (is_dark)
+    {
+        label_color = StateColor(std::make_pair(wxColour(0x6E, 0x76, 0x81), (int) StateColor::Disabled),
+                                 std::make_pair(UIColors::SecondaryTextDark(), (int) StateColor::Normal));
+        text_color = StateColor(std::make_pair(wxColour(0x6E, 0x76, 0x81), (int) StateColor::Disabled),
+                                std::make_pair(fg_color, (int) StateColor::Normal));
+    }
+#endif
 
     double initialFromText;
     if (text.ToDouble(&initialFromText))

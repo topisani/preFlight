@@ -1,5 +1,35 @@
 # preFlight Changelog
 
+## v0.9.6
+
+### macOS Support (New)
+- Added macOS 11.0+ support for Apple Silicon
+- Dark mode and Retina display support
+- ***preFlight for macOS is currently not digitally signed - this will be finalized soon and released in v0.9.7***
+
+### New Features
+- Allow Slice Platter from any tab (not just Prepare)
+- Enabled background processing preference in settings so users can opt in to automatic slicing
+- Added "Remember my choice" to upload overwrite dialog and "Reset Upload Preferences" button in Send G-Code dialog
+
+### DPI / Multi-Monitor Fixes
+- Fixed ImGui Legend sidebar rendering at wrong width after cross-monitor DPI change
+- Fixed DPI scaling corruption when dragging window across monitors - full rescale now triggers on drag end
+- Fixed sidebar preset combo box text vertical centering after DPI change
+
+### GPU / Rendering
+- Fixed GPU retention after interaction in Preview canvas
+
+### Bug Fixes
+- Fixed fan ramp segment split producing wrong E values in absolute E mode
+- Fixed missing icons in Settings/Export dropdowns after DPI fix broke uncached bitmap items
+- Fixed MsgDialog HTML content rendering with white background on Windows
+- Fixed missing tree view icons in settings
+
+### Linux
+- Clipped popup menu background to rounded borders on GTK3
+
+
 ## v0.9.5
 
 ### Print Host Improvements

@@ -41,9 +41,9 @@ else()
         endif()
 endif()
 
-option(SLIC3R_STATIC 			"Compile PrusaSlicer with static libraries (Boost, TBB, glew)" ${SLIC3R_STATIC_INITIAL})
-option(SLIC3R_GUI    			"Compile PrusaSlicer with GUI components (OpenGL, wxWidgets)" 1)
-option(SLIC3R_FHS               "Assume PrusaSlicer is to be installed in a FHS directory structure" 0)
+option(SLIC3R_STATIC 			"Compile preFlight with static libraries (Boost, TBB, glew)" ${SLIC3R_STATIC_INITIAL})
+option(SLIC3R_GUI    			"Compile preFlight with GUI components (OpenGL, wxWidgets)" 1)
+option(SLIC3R_FHS               "Assume preFlight is to be installed in a FHS directory structure" 0)
 option(SLIC3R_PCH               "Use precompiled headers" 1)
 option(SLIC3R_MSVC_COMPILE_PARALLEL "Compile on Visual Studio in parallel" 1)
 option(SLIC3R_ASAN              "Enable ASan on Clang and GCC" 0)
@@ -54,7 +54,7 @@ option(SLIC3R_REPO_URL          "Preset repo URL")
 # Legacy Clipper 6.4.2 support has been removed
 
 # SLIC3R_OPENGL_ES can be enabled only if SLIC3R_GUI is enabled.
-CMAKE_DEPENDENT_OPTION(SLIC3R_OPENGL_ES "Compile PrusaSlicer targeting OpenGL ES" OFF "SLIC3R_GUI" OFF)
+CMAKE_DEPENDENT_OPTION(SLIC3R_OPENGL_ES "Compile preFlight targeting OpenGL ES" OFF "SLIC3R_GUI" OFF)
 
 # Desktop integration: when ON, the app can prompt the user to create .desktop files and icons at runtime.
 # The upstream logic forced this OFF for FHS builds, but preFlight needs it ON for Flatpak.
@@ -92,7 +92,7 @@ if (APPLE)
     endif ()
 endif ()
 
-# preFlight does not build or use the PrusaSlicer test suite or sandboxes
+# preFlight does not build or use the test suite or sandboxes
 
 # Print out the SLIC3R_* cache options
 get_cmake_property(_cache_vars CACHE_VARIABLES)
@@ -156,7 +156,7 @@ if (MINGW)
 endif ()
 
 if (NOT MSVC)
-    # ARMs (Raspberry PI) use an unsigned char by default. Let's make it consistent for PrusaSlicer on all platforms.
+    # ARMs (Raspberry PI) use an unsigned char by default. Let's make it consistent on all platforms.
     add_compile_options(-fsigned-char)
 endif ()
 
@@ -313,7 +313,7 @@ if (SLIC3R_ASAN)
 endif ()
 
 if (SLIC3R_UBSAN)
-    # Stacktrace for every report is enabled by default. It can be disabled by running PrusaSlicer with "UBSAN_OPTIONS=print_stacktrace=0".
+    # Stacktrace for every report is enabled by default. It can be disabled by running preFlight with "UBSAN_OPTIONS=print_stacktrace=0".
 
     # Define macro SLIC3R_UBSAN to allow detection in the source code if this sanitizer is enabled.
     add_compile_definitions(SLIC3R_UBSAN)
@@ -394,7 +394,6 @@ if(WIN32)
     if(MSVC)
         # BOOST_ALL_NO_LIB: Avoid the automatic linking of Boost libraries on Windows. Rather rely on explicit linking.
         add_definitions(-DBOOST_ALL_NO_LIB -DBOOST_USE_WINAPI_VERSION=0x602 -D_WIN32_WINNT=0x0602 -DBOOST_SYSTEM_USE_UTF8 )
-        # Force the source code encoding to UTF-8. See PrusaSlicer GH pull request #5583
         add_compile_options("$<$<C_COMPILER_ID:MSVC>:/utf-8>")
         add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
     endif(MSVC)
@@ -550,7 +549,7 @@ add_custom_target(gettext_merge_community_po_with_pot
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     COMMENT "Merge community po with new generated pot file"
 )
-file(GLOB L10N_PO_FILES "${L10N_DIR}/*/PrusaSlicer*.po")
+file(GLOB L10N_PO_FILES "${L10N_DIR}/*/preFlight*.po")
 # list of names of directories, which are licalized by PS internally
 list(APPEND PS_L10N_DIRS "cs" "de" "es" "fr" "it" "ja" "pl")
 foreach(po_file ${L10N_PO_FILES})
@@ -653,9 +652,9 @@ endfunction()
 
 add_subdirectory(build-utils)
 add_subdirectory(bundled_deps)
-# libslic3r, PrusaSlicer GUI and the PrusaSlicer executable.
+# libslic3r, preFlight GUI and the preFlight executable.
 add_subdirectory(src)
-set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT PrusaSlicer_app_console)
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT preFlight_app_console)
 
 add_dependencies(gettext_make_pot hintsToPot)
 

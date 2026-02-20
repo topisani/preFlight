@@ -198,9 +198,9 @@ static wxStaticBoxSizer *CreateFlatStaticBoxSizer(wxWindow *parent, const wxStri
     stb->SetFont(wxGetApp().bold_font());
     wxGetApp().UpdateDarkUI(stb);
     auto *sizer = new wxStaticBoxSizer(stb, orient);
-#ifdef __WXGTK__
-    // preFlight: GtkFrame label is removed in FlatStaticBox — add top padding
-    // so content doesn't overlap the custom-drawn border and label.
+#if defined(__WXGTK__) || defined(__WXOSX__)
+    // preFlight: On GTK, GtkFrame label is removed.  On macOS, NSBox title is
+    // set to NSNoTitle.  Add top padding so content clears the custom border.
     sizer->AddSpacer(wxGetApp().em_unit());
 #endif
     return sizer;
@@ -8771,6 +8771,8 @@ void ProcessSection::UpdateSidebarVisibility()
 
 void ProcessSection::msw_rescale()
 {
+    if (m_preset_combo)
+        m_preset_combo->msw_rescale();
     if (m_settings_panel)
         m_settings_panel->msw_rescale();
 }
@@ -8919,8 +8921,12 @@ private:
             const auto &tab = m_tabs[i];
             wxBitmap icon = tab.icon_bundle.GetBitmapFor(this);
 
-            // Scale icon to desired logical size if needed
+            // Get icon logical size (GetSize returns physical pixels on Retina)
+#ifdef __APPLE__
+            wxSize icon_sz = icon.IsOk() ? icon.GetLogicalSize() : wxSize(0, 0);
+#else
             wxSize icon_sz = icon.IsOk() ? icon.GetSize() : wxSize(0, 0);
+#endif
 
             wxSize text_sz = dc.GetTextExtent(tab.label);
             int content_width = (icon.IsOk() ? icon_sz.GetWidth() + padding : 0) + text_sz.GetWidth();
@@ -10664,6 +10670,18 @@ void Sidebar::msw_rescale()
             spin->Rescale();
         }
     }
+
+    // Rescale sidebar preset combo boxes (text vertical centering depends on DPI)
+    if (m_combo_printer)
+        m_combo_printer->msw_rescale();
+    if (m_combo_print)
+        m_combo_print->msw_rescale();
+    for (auto *combo : m_combos_filament)
+        if (combo)
+            combo->msw_rescale();
+    for (auto *combo : m_printer_filament_combos)
+        if (combo)
+            combo->msw_rescale();
 
     // ScalableButton doesn't have msw_rescale, only sys_color_changed
 

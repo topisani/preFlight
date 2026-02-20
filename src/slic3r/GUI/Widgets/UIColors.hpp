@@ -341,6 +341,17 @@ inline wxColour StaticBoxBorderLight()
     return wxColour(180, 175, 165);
 }
 
+// --- FlatStaticBox (Section Group) Border Colors ---
+
+inline wxColour SectionBorderDark()
+{
+    return wxColour(255, 255, 255); // White — section group borders in dark mode
+}
+inline wxColour SectionBorderLight()
+{
+    return wxColour(0, 0, 0); // Black — section group borders in light mode
+}
+
 // --- Accent Colors (Theme-independent) ---
 
 inline wxColour AccentPrimary()
@@ -523,6 +534,11 @@ inline wxColour TabBorder()
 inline wxColour StaticBoxBorder()
 {
     return Slic3r::GUI::IsDarkMode() ? StaticBoxBorderDark() : StaticBoxBorderLight();
+}
+
+inline wxColour SectionBorder()
+{
+    return Slic3r::GUI::IsDarkMode() ? SectionBorderDark() : SectionBorderLight();
 }
 
 // ============================================================================

@@ -296,13 +296,15 @@ if (WIN32)
 
 else ()
     if (APPLE)
-        # On OSX, the name of the binary matches the name of the Application.
+        # On macOS, the binary is "preFlight" (mixed-case).  Default APFS is
+        # case-insensitive so "preflight" and "preFlight" are the same file —
+        # skip that symlink to avoid a self-referential loop.  Only create the
+        # gcodeviewer symlinks whose names differ enough to be safe.
         add_custom_command(TARGET preFlight POST_BUILD
-            COMMAND ln -sf preFlight preflight
             COMMAND ln -sf preFlight preflight-gcodeviewer
             COMMAND ln -sf preFlight preFlightGCodeViewer
             WORKING_DIRECTORY "$<TARGET_FILE_DIR:preFlight>"
-            COMMENT "Symlinking the G-code viewer to preFlight, symlinking to preflight and preflight-gcodeviewer"
+            COMMENT "Symlinking the G-code viewer to preFlight"
             VERBATIM)
     else ()
         add_custom_command(TARGET preFlight POST_BUILD

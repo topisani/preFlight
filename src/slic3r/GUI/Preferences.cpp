@@ -336,7 +336,10 @@ void PreferencesDialog::build()
             L("If this is enabled, Slic3r will prompt the last output directory instead of the one containing the input files."),
             app_config->has("remember_output_path") ? app_config->get_bool("remember_output_path") : true);
 
-        // Background processing hardcoded to false
+        append_bool_option(m_optgroup_general, "background_processing", L("Background processing"),
+                           L("If this is enabled, preFlight will pre-process objects as soon "
+                             "as they're loaded in order to save time when exporting G-code."),
+                           app_config->get_bool("background_processing"));
 
         append_bool_option(
             m_optgroup_general, "alert_when_supports_needed", L("Alert when supports needed"),

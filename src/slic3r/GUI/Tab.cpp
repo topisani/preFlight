@@ -54,6 +54,8 @@
 #include "Widgets/UIColors.hpp"
 #ifdef _WIN32
 #include "DarkMode.hpp"
+#elif defined(__APPLE__)
+#include "../Utils/MacDarkMode.hpp"
 #endif
 #include <wx/imaglist.h>
 #include <wx/spinctrl.h>
@@ -188,6 +190,9 @@ void Tab::create_preset_tab()
     // Create additional panel to Fit() it from OnActivate()
     // It's needed for tooltip showing on OSX
     m_tmp_panel = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBK_LEFT | wxTAB_TRAVERSAL);
+    // preFlight: Set themed background so LabeledBorderPanel and other children
+    // inherit the correct color instead of the default macOS window background.
+    m_tmp_panel->SetBackgroundColour(::UIColors::ContentBackground());
     auto panel = m_tmp_panel;
     auto sizer = new wxBoxSizer(wxVERTICAL);
     m_tmp_panel->SetSizer(sizer);
@@ -347,7 +352,7 @@ void Tab::create_preset_tab()
                                 wxTR_NO_BUTTONS | wxTR_HIDE_ROOT | wxTR_SINGLE | wxTR_NO_LINES | wxBORDER_NONE |
                                     wxWANTS_CHARS);
     m_treectrl->SetFont(wxGetApp().normal_font());
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
     // preFlight: use theme color so tree background matches the settings area
     m_treectrl->SetBackgroundColour(::UIColors::InputBackground());
 #endif
@@ -362,6 +367,11 @@ void Tab::create_preset_tab()
 #ifdef _WIN32
     // Apply custom themed tree view
     NppDarkMode::SetDarkThemeForTreeCtrl(m_treectrl->GetHWND());
+#elif defined(__APPLE__)
+    // preFlight: Selection outline styling is handled globally by
+    // preFlightRendererNative (installed in GUI_App::on_init_inner), which replaces
+    // the default blue filled selection rect with a 1px outline border for
+    // all wxTreeCtrl instances.
 #endif
 
     // Delay processing of the following handler until the message queue is flushed.
@@ -1186,14 +1196,22 @@ void Tab::sys_color_changed()
 
     // Apply custom themed tree view with proper selection colors
     NppDarkMode::SetDarkThemeForTreeCtrl(m_treectrl->GetHWND());
+#endif
 
-    // Theme the settings labeled border panel
+    // Theme the settings labeled border panel and page view on all platforms
     if (m_tree_panel)
         m_tree_panel->sys_color_changed();
-
+#if defined(__linux__) || defined(__APPLE__)
+    // preFlight: update tree background to match theme
+    m_treectrl->SetBackgroundColour(::UIColors::InputBackground());
+#endif
+#ifdef __WXOSX__
+    // preFlight: update parent panel background to match theme
+    if (m_tmp_panel)
+        m_tmp_panel->SetBackgroundColour(::UIColors::ContentBackground());
+#endif
     if (m_page_view)
         m_page_view->sys_color_changed();
-#endif
     update_changed_tree_ui();
 
     // update options_groups
@@ -3563,7 +3581,8 @@ void TabPrinter::build_fff()
             });
     };
 
-    build_print_host_upload_group(page.get());
+    // preFlight: Print Host upload section removed - physical printer settings handle this
+    // build_print_host_upload_group(page.get());
 
     optgroup = page->new_optgroup_for_sidebar(L("Firmware"));
     optgroup->append_single_option_line("gcode_flavor");
@@ -5079,13 +5098,22 @@ void Tab::rebuild_page_tree()
 
     if (item_count > 0)
     {
-        int item_height = m_treectrl->GetCharHeight() + (em_unit(this) * 4) / 10;
-#ifdef __linux__
-        // preFlight: GTK tree items have more internal padding than reported by GetCharHeight.
-        // Add 1.5x item_height so the last item is fully visible without scrolling.
-        int tree_height = item_count * item_height + (item_height * 3) / 2;
+#ifdef _WIN32
+        // preFlight: Use the actual tree item height reported by the control
+        int item_height = TreeView_GetItemHeight(m_treectrl->GetHWND());
+        int tree_height = item_count * item_height + 4;
 #else
-        int tree_height = item_count * item_height + 8; // Add small padding
+        int item_height = m_treectrl->GetCharHeight() + (em_unit(this) * 4) / 10;
+#ifdef __APPLE__
+        // preFlight: macOS tree items have more internal padding than reported
+        // by GetCharHeight.  Add 2x item_height so longer lists (e.g. Print
+        // settings with 9 items) don't clip the last item.
+        int tree_height = item_count * item_height + item_height * 2;
+#else
+        // preFlight: GTK tree items have more internal padding than reported
+        // by GetCharHeight.  Add 1.5x item_height so the last item is fully visible.
+        int tree_height = item_count * item_height + (item_height * 3) / 2;
+#endif
 #endif
         m_treectrl->SetMinSize(wxSize(-1, tree_height));
         if (m_tree_panel)

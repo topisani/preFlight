@@ -179,8 +179,8 @@ ObjectManipulation::ObjectManipulation(wxWindow *parent) : OG_Settings(parent, t
     const int border = wxOSX ? 0 : 4;
     const int em = wxGetApp().em_unit();
 
-#ifdef __WXGTK__
-    // preFlight: On GTK3, GtkFixed draws children in creation order. The FlatStaticBox
+#if defined(__WXGTK__) || defined(__WXOSX__)
+    // preFlight: On GTK3/macOS, views draw in creation order. The FlatStaticBox
     // must be created before child controls so it's drawn underneath them (background
     // first, controls on top). Without this, the FlatStaticBox's background fill
     // paints over the controls, making the panel appear blank.
@@ -591,15 +591,15 @@ ObjectManipulation::ObjectManipulation(wxWindow *parent) : OG_Settings(parent, t
 
     m_og->activate(); // No-op on GTK (already activated above); creates sizer on Windows/macOS
     m_og->sizer->Clear(true);
-#ifdef __WXGTK__
-    // preFlight: FlatStaticBox removes the GtkFrame label, so content starts at top.
-    // Add top padding to clear the custom-drawn border/label (label height + gap).
-    m_og->sizer->AddSpacer(em * 3 / 2);
-    // preFlight: On GTK, no native wxStaticBox internal padding exists (GtkFrame
-    // internals were removed). Use em/2 margin to match OptionsGroup::activate().
-    m_og->sizer->Add(m_main_grid_sizer, 1, wxEXPAND | wxALL, em / 2);
-#else
+#ifdef _WIN32
     m_og->sizer->Add(m_main_grid_sizer, 1, wxEXPAND | wxALL, border);
+#else
+    // preFlight: On GTK, GtkFrame label is removed.  On macOS, NSBox title is
+    // set to NSNoTitle.  Add top padding to clear the custom-drawn border/label.
+#ifdef __WXGTK__
+    m_og->sizer->AddSpacer(em);
+#endif
+    m_og->sizer->Add(m_main_grid_sizer, 1, wxEXPAND | wxALL, em / 2);
 #endif
 
     // Apply correct theme colors after all controls are created

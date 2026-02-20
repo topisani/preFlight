@@ -61,12 +61,10 @@ private:
     std::string m_password;
     bool m_webview_created{false};
 
-#ifdef __linux__
     // Some printer web interfaces (e.g. Mainsail) initially load a read-only
-    // cached view under WebKit2GTK.  A single hard-refresh after the first
-    // page load resolves this; the flag tracks whether we still need to do it.
+    // cached view on first load.  A single hard-refresh after the panel becomes
+    // visible resolves this; the flag tracks whether we still need to do it.
     bool m_needs_initial_refresh{false};
-#endif
 };
 
 } // namespace GUI

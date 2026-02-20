@@ -4,6 +4,9 @@
 ///|/
 #include "ThemedTextCtrl.hpp"
 #include "ScrollablePanel.hpp"
+#ifdef __APPLE__
+#include "../../Utils/MacDarkMode.hpp"
+#endif
 
 namespace Slic3r
 {
@@ -105,6 +108,12 @@ void ThemedTextCtrl::RefreshThemedColors()
         // RDW_ERASE triggers WM_ERASEBKGND which we handle
         RedrawWindow((HWND) GetHWND(), NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
     }
+#elif defined(__APPLE__)
+    // preFlight: macOS NSTextField ignores SetBackgroundColour() — set via Cocoa API
+    if (m_hasThemedColors && m_themedBgColor.IsOk() && GetHandle())
+        Slic3r::GUI::mac_set_textfield_background(GetHandle(), m_themedBgColor.Red(), m_themedBgColor.Green(),
+                                                  m_themedBgColor.Blue());
+    Refresh();
 #else
     Refresh();
 #endif

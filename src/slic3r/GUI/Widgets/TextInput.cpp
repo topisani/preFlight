@@ -214,6 +214,18 @@ void TextInput::Create(wxWindow *parent, wxString text, wxString label, wxString
     SetForegroundColour(fg_color);
     // Set themed colors on the internal text control - these will persist through theme changes
     text_ctrl->SetThemedColors(bg_color, fg_color);
+
+#ifdef __APPLE__
+    // preFlight: Constructor label_color defaults are light-mode. Update for dark mode.
+    if (is_dark)
+    {
+        label_color = StateColor(std::make_pair(wxColour(0x6E, 0x76, 0x81), (int) StateColor::Disabled),
+                                 std::make_pair(UIColors::SecondaryTextDark(), (int) StateColor::Normal));
+        text_color = StateColor(std::make_pair(wxColour(0x6E, 0x76, 0x81), (int) StateColor::Disabled),
+                                std::make_pair(fg_color, (int) StateColor::Normal));
+    }
+#endif
+
     state_handler.attach_child(text_ctrl);
 
     text_ctrl->Bind(wxEVT_KILL_FOCUS,
@@ -381,6 +393,15 @@ void TextInput::SysColorsChanged()
     SetBackgroundColour(bg_normal);
     SetForegroundColour(fg_normal);
 
+#ifdef __APPLE__
+    // preFlight: Update label color for current theme.
+    // Constructor defaults are light-mode colors; macOS needs explicit update.
+    wxColour lbl_clr = is_dark ? UIColors::SecondaryTextDark() : UIColors::SecondaryTextLight();
+    wxColour lbl_dis = is_dark ? wxColour(0x6E, 0x76, 0x81) : wxColour(0x90, 0x90, 0x90);
+    label_color = StateColor(std::make_pair(lbl_dis, (int) StateColor::Disabled),
+                             std::make_pair(lbl_clr, (int) StateColor::Normal));
+#endif
+
     // Apply themed colors to internal text control
     if (text_ctrl)
     {
@@ -529,6 +550,38 @@ bool TextInput::Enable(bool enable)
 
         // Force the edit control to repaint - RedrawWindow triggers WM_CTLCOLOREDIT
         RedrawWindow((HWND) text_ctrl->GetHWND(), NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+        Refresh();
+    }
+    return changed;
+#elif defined(__APPLE__)
+    // preFlight: macOS — same approach as Windows. Disabled native NSTextField ignores
+    // our themed colors and shows the system disabled appearance. Keep text_ctrl enabled
+    // but read-only, and set colors explicitly via ThemedTextCtrl.
+    bool changed = wxWindowBase::IsThisEnabled() != enable;
+    wxWindow::Enable(enable);
+
+    if (changed && text_ctrl)
+    {
+        text_ctrl->SetEditable(enable);
+
+        bool dark = Slic3r::GUI::wxGetApp().dark_mode();
+        wxColour bg_color, fg_color;
+        if (enable)
+        {
+            bg_color = dark ? UIColors::InputBackgroundDark() : UIColors::InputBackgroundLight();
+            fg_color = dark ? UIColors::InputForegroundDark() : UIColors::InputForegroundLight();
+        }
+        else
+        {
+            bg_color = dark ? UIColors::InputBackgroundDisabledDark() : UIColors::InputBackgroundDisabledLight();
+            fg_color = dark ? UIColors::InputForegroundDisabledDark() : UIColors::InputForegroundDisabledLight();
+        }
+        text_ctrl->SetThemedColors(bg_color, fg_color);
+
+        wxCommandEvent e(EVT_ENABLE_CHANGED);
+        e.SetEventObject(this);
+        GetEventHandler()->ProcessEvent(e);
+
         Refresh();
     }
     return changed;

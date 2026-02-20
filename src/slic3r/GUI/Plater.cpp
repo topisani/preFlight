@@ -936,6 +936,43 @@ void Plater::priv::init()
                 }
             }
 
+#ifdef __APPLE__
+            // preFlight: On macOS, use native popup menu to avoid wxPopupTransientWindow
+            // issues with the Cocoa event loop (mouse freeze after dismiss).
+            {
+                wxMenu nativeMenu;
+                int clipId = wxNewId();
+                int notesId = wxNewId();
+
+                if (clicked_object_id >= 0)
+                {
+                    wxMenuItem *clipItem = nativeMenu.Append(clipId, _L("Clipping Plane"));
+                    clipItem->SetBitmap(*get_bmp_bundle("clip_plane"));
+                }
+                wxMenuItem *notesItem = nativeMenu.Append(notesId, _L("Notes"));
+                notesItem->SetBitmap(*get_bmp_bundle("note"));
+
+                nativeMenu.Bind(wxEVT_MENU,
+                                [this, clipId, notesId, clicked_object_id](wxCommandEvent &cmd)
+                                {
+                                    if (cmd.GetId() == clipId && clicked_object_id >= 0)
+                                    {
+                                        GLCanvas3D *cnv = preview->get_canvas3d();
+                                        if (cnv != nullptr)
+                                            cnv->get_gcode_viewer().get_preview_clip_controller().activate(
+                                                clicked_object_id);
+                                    }
+                                    else if (cmd.GetId() == notesId)
+                                    {
+                                        this->notes_dialog.show(-1);
+                                    }
+                                });
+
+                Vec2d mouse_position = evt.data.first;
+                wxPoint position(static_cast<int>(mouse_position.x()), static_cast<int>(mouse_position.y()));
+                preview->get_wxglcanvas()->PopupMenu(&nativeMenu, position);
+            }
+#else
             // Build CustomMenu directly (no wxMenu intermediate) to
             // avoid use-after-free when FromWxMenu captures a raw
             // wxMenu* that gets destroyed on dismiss.
@@ -970,6 +1007,7 @@ void Plater::priv::init()
                 customMenu->Create(preview->get_wxglcanvas());
             wxPoint screenPos = preview->get_wxglcanvas()->ClientToScreen(position);
             customMenu->ShowAt(screenPos, preview->get_wxglcanvas());
+#endif
         });
     if (wxGetApp().is_editor())
     {
@@ -6373,6 +6411,10 @@ bool Plater::is_view3D_shown() const
 {
     return p->is_view3D_shown();
 }
+bool Plater::is_slicing() const
+{
+    return p->background_process.running();
+}
 
 bool Plater::are_view3D_labels_shown() const
 {
@@ -7695,16 +7737,33 @@ void Plater::send_gcode_inner(DynamicPrintConfig *physical_printer_config)
         }
         if (file_already_exists)
         {
-            MessageDialog overwrite_dlg(
-                this,
-                wxString::Format(_L("The file '%s' already exists on the printer.\n\nOverwrite it?"),
-                                 upload_job.upload_data.upload_path.filename().wstring()),
-                _L("File Already Exists"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING);
-            if (overwrite_dlg.ShowModal() != wxID_YES)
+            // preFlight: Check stored preference for overwrite behavior
+            std::string overwrite_pref = wxGetApp().app_config->has("upload_host_always_overwrite")
+                                             ? wxGetApp().app_config->get("upload_host_always_overwrite")
+                                             : "ask";
+
+            if (overwrite_pref == "always")
             {
-                // Let user pick a different name — loop back to the send dialog
-                dialog_path = dlg.filename();
-                continue;
+                // User previously chose to always overwrite - skip the dialog
+            }
+            else
+            {
+                RichMessageDialogBase overwrite_dlg(
+                    this,
+                    wxString::Format(_L("The file '%s' already exists on the printer.\n\nOverwrite it?"),
+                                     upload_job.upload_data.upload_path.filename().wstring()),
+                    _L("File Already Exists"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING);
+                overwrite_dlg.ShowCheckBox(_L("Remember my choice"));
+
+                if (overwrite_dlg.ShowModal() != wxID_YES)
+                {
+                    // Let user pick a different name - loop back to the send dialog
+                    dialog_path = dlg.filename();
+                    continue;
+                }
+
+                if (overwrite_dlg.IsCheckBoxChecked())
+                    wxGetApp().app_config->set("upload_host_always_overwrite", "always");
             }
         }
 
@@ -8044,6 +8103,28 @@ void Plater::on_activate(bool active)
     if (active)
     {
         this->p->show_delayed_error_message();
+        // preFlight: Resume rendering on both canvases when the application regains focus.
+        if (auto *c = canvas3D())
+            c->resume_rendering();
+        if (auto *c = get_current_canvas3D())
+            c->resume_rendering();
+    }
+    else
+    {
+        // preFlight: Pause rendering on both canvases when the application loses focus.
+        // No reason to burn GPU cycles while the user is in another application.
+        // on_idle checks m_rendering_paused and returns immediately. Any state changes
+        // (slicing completion, notifications) set m_dirty, which is picked up when
+        // resume_rendering() re-enables on_idle and sets m_dirty = true.
+        if (auto *c = canvas3D())
+            c->pause_rendering();
+        if (auto *c = get_current_canvas3D())
+            c->pause_rendering();
+        // preFlight: Release the GL context so the GPU driver drops to idle power state.
+        // wglMakeCurrent(NULL, NULL) operates on the calling thread - one call releases
+        // whichever canvas context is current. Re-acquired by _set_current() on next render.
+        if (auto *c = get_current_canvas3D())
+            c->release_gl_context();
     }
 }
 

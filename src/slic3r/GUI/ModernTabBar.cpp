@@ -349,16 +349,16 @@ void ModernTabBar::AddSettingsDropdownButton(std::function<void(TabType)> callba
         {
             wxMenu menu;
             wxMenuItem *print_item = menu.Append(static_cast<int>(TAB_PRINT_SETTINGS), _L("Print Settings"));
-            print_item->SetBitmap(*get_bmp_bundle("cog"));
+            set_menu_item_bitmap(print_item, "cog");
             wxMenuItem *filament_item = menu.Append(static_cast<int>(TAB_FILAMENTS), _L("Filament Settings"));
-            filament_item->SetBitmap(*get_bmp_bundle("spool"));
+            set_menu_item_bitmap(filament_item, "spool");
             wxMenuItem *printer_item = menu.Append(static_cast<int>(TAB_PRINTERS), _L("Printer Settings"));
-            printer_item->SetBitmap(*get_bmp_bundle("printer"));
+            set_menu_item_bitmap(printer_item, "printer");
             menu.AppendSeparator();
             // preFlight: use wxID_HIGHEST+1 to avoid collision with TabType enum values
             const int search_menu_id = wxID_HIGHEST + 1;
             wxMenuItem *search_item = menu.Append(search_menu_id, _L("Search Settings"));
-            search_item->SetBitmap(*get_bmp_bundle("search"));
+            set_menu_item_bitmap(search_item, "search");
 
             // Position menu at bottom-left of button (like standard menu bar menus)
             wxPoint menu_pos(0, m_settings_dropdown_btn->GetSize().y);
@@ -876,8 +876,8 @@ void ModernTabBar::AddSliceButton(std::function<void()> slice_callback, std::fun
             dc.SetPen(*wxTRANSPARENT_PEN);
             dc.DrawRectangle(0, 0, size.x, size.y);
 
-            // Choose colors based on enabled state (both Plater and tab conditions must be met)
-            bool effectively_enabled = m_slice_button_enabled && m_slice_tab_enabled;
+            // Choose colors based on enabled state
+            bool effectively_enabled = m_slice_button_enabled;
             wxColour bg_color = effectively_enabled ? dark_bg : disabled_bg;
             wxColour border_color = effectively_enabled ? orange : disabled_bg;
             wxColour current_text_color = effectively_enabled ? text_color : disabled_text;
@@ -927,7 +927,7 @@ void ModernTabBar::AddSliceButton(std::function<void()> slice_callback, std::fun
     m_slice_button->Bind(wxEVT_LEFT_DOWN,
                          [this](wxMouseEvent &event)
                          {
-                             if (!m_slice_button_enabled || !m_slice_tab_enabled)
+                             if (!m_slice_button_enabled)
                                  return;
 
                              m_slice_button_pressed = true;
@@ -941,9 +941,9 @@ void ModernTabBar::AddSliceButton(std::function<void()> slice_callback, std::fun
                                  const int ID_SAVE_LOCALLY = wxID_HIGHEST + 1;
                                  const int ID_SEND_TO_PRINTER = wxID_HIGHEST + 2;
                                  wxMenuItem *save_item = menu.Append(ID_SAVE_LOCALLY, _L("Save locally"));
-                                 save_item->SetBitmap(*get_bmp_bundle("save"));
+                                 set_menu_item_bitmap(save_item, "save");
                                  wxMenuItem *send_item = menu.Append(ID_SEND_TO_PRINTER, _L("Send to Printer"));
-                                 send_item->SetBitmap(*get_bmp_bundle("export_gcode"));
+                                 set_menu_item_bitmap(send_item, "export_gcode");
 
                                  // Show menu at button position using CustomMenu for theming
                                  wxPoint menu_pos = m_slice_button->GetPosition();
@@ -993,7 +993,23 @@ void ModernTabBar::AddSliceButton(std::function<void()> slice_callback, std::fun
                              }
                              else
                              {
-                                 // Clicked on main button area
+            // Clicked on main button area
+#ifdef __APPLE__
+                                 // preFlight: Defer the callback to after the mouse event completes.
+                                 // Running heavy operations (view switch + reslice) directly from
+                                 // LEFT_DOWN confuses the macOS Cocoa event sequence and can trigger
+                                 // spurious window close events.
+                                 if (m_has_sliced_object && m_export_callback)
+                                 {
+                                     auto cb = m_export_callback;
+                                     wxTheApp->CallAfter([cb]() { cb(); });
+                                 }
+                                 else if (m_slice_callback)
+                                 {
+                                     auto cb = m_slice_callback;
+                                     wxTheApp->CallAfter([cb]() { cb(); });
+                                 }
+#else
                                  if (m_has_sliced_object && m_export_callback)
                                  {
                                      m_export_callback();
@@ -1002,6 +1018,7 @@ void ModernTabBar::AddSliceButton(std::function<void()> slice_callback, std::fun
                                  {
                                      m_slice_callback();
                                  }
+#endif
                              }
                          });
 
@@ -1015,7 +1032,7 @@ void ModernTabBar::AddSliceButton(std::function<void()> slice_callback, std::fun
     m_slice_button->Bind(wxEVT_ENTER_WINDOW,
                          [this](wxMouseEvent &event)
                          {
-                             if (!m_slice_button_enabled || !m_slice_tab_enabled)
+                             if (!m_slice_button_enabled)
                              {
                                  m_slice_button->SetToolTip(_L("Add objects to the platter to enable slicing"));
                              }
@@ -1079,13 +1096,7 @@ void ModernTabBar::UpdateSliceButtonVisibility()
     if (!m_slice_button)
         return;
 
-    // Always visible regardless of tab
     m_slice_button->Show();
-
-    // In Slice mode: only actionable on Prepare tab
-    // In Export mode: actionable on all tabs
-    m_slice_tab_enabled = m_has_sliced_object || (m_selected_tab == TAB_PREPARE);
-
     m_slice_button->Refresh();
     Layout();
 }

@@ -28,6 +28,9 @@
 #include "libslic3r/MultipleBeds.hpp"
 
 #include "OptionsGroup.hpp"
+#ifdef __APPLE__
+#include "slic3r/Utils/MacDarkMode.hpp"
+#endif
 #include "Tab.hpp"
 #include "wxExtensions.hpp"
 #include "libslic3r/Model.hpp"
@@ -384,21 +387,39 @@ void ObjectList::create_objects_ctrl()
     AppendBitmapColumn(_L("Edit"), colEditing, wxDATAVIEW_CELL_INERT, 4 * em, wxALIGN_CENTER_HORIZONTAL, 0);
 
     // Set fixed column widths - these never change
-    const int print_width = 3 * em;
-    const int extruder_width = 9 * em; // Reduced to give more space to Name column
-    const int editing_width = 4 * em;
+    m_print_col_width = 3 * em;
+    m_extruder_col_width = 9 * em; // Reduced to give more space to Name column
+    m_editing_col_width = 4 * em;
 
-    GetColumn(colPrint)->SetWidth(print_width);
-    GetColumn(colExtruder)->SetWidth(extruder_width);
+    GetColumn(colPrint)->SetWidth(m_print_col_width);
+    GetColumn(colExtruder)->SetWidth(m_extruder_col_width);
     GetColumn(colExtruder)->SetHidden(false);
-    GetColumn(colEditing)->SetWidth(editing_width);
+    GetColumn(colEditing)->SetWidth(m_editing_col_width);
 
     // Set initial Name column width
     int initial_name_width = 15 * em;
     GetColumn(colName)->SetWidth(initial_name_width);
 
     // Store fixed widths as member for resize calculation
-    m_fixed_columns_width = print_width + extruder_width + editing_width;
+    m_fixed_columns_width = m_print_col_width + m_extruder_col_width + m_editing_col_width;
+
+#ifdef __APPLE__
+    // preFlight: Disable horizontal scrollbar and fit columns once the native
+    // NSOutlineView is fully set up.  Must re-assert fixed column widths first
+    // because NSOutlineView's default LastColumnOnlyAutoresizing may have shrunk
+    // the Edit column during initial layout.
+    CallAfter(
+        [this]()
+        {
+            Slic3r::GUI::mac_disable_horizontal_scroll(GetHandle());
+            GetColumn(colPrint)->SetWidth(m_print_col_width);
+            GetColumn(colExtruder)->SetWidth(m_extruder_col_width);
+            GetColumn(colEditing)->SetWidth(m_editing_col_width);
+            int name_w = Slic3r::GUI::mac_get_outlineview_name_width(GetHandle());
+            if (name_w > 0)
+                GetColumn(colName)->SetWidth(name_w);
+        });
+#endif
 
     // Bind size event to adjust Name column width dynamically
     Bind(wxEVT_SIZE,
@@ -408,8 +429,23 @@ void ObjectList::create_objects_ctrl()
              CallAfter(
                  [this]()
                  {
-                     int client_width = GetClientSize().GetWidth();
                      int em = wxGetApp().em_unit();
+#ifdef __APPLE__
+                     // preFlight: Re-assert fixed column widths (NSOutlineView's autoresizing
+                     // may have changed them), then measure available width from the actual
+                     // NSOutlineView and set Name via wxWidgets so both sides stay in sync.
+                     GetColumn(colPrint)->SetWidth(m_print_col_width);
+                     GetColumn(colExtruder)->SetWidth(m_extruder_col_width);
+                     GetColumn(colEditing)->SetWidth(m_editing_col_width);
+                     int name_w = Slic3r::GUI::mac_get_outlineview_name_width(GetHandle());
+                     if (name_w > 5 * em)
+                     {
+                         int cur = GetColumn(colName)->GetWidth();
+                         if (std::abs(name_w - cur) > em)
+                             GetColumn(colName)->SetWidth(name_w);
+                     }
+#else
+                     int client_width = GetClientSize().GetWidth();
                      if (client_width < 5 * em)
                          return;
 
@@ -422,6 +458,7 @@ void ObjectList::create_objects_ctrl()
                          if (std::abs(name_width - current_name_width) > em)
                              GetColumn(colName)->SetWidth(name_width);
                      }
+#endif
                  });
          });
 }

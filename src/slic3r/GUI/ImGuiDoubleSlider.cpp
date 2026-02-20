@@ -77,15 +77,26 @@ static bool behavior(ImGuiID id, const ImRect &region, const ImS32 v_min, const 
         }
         else
         {
+            // Accumulate wheel delta across frames so trackpad smooth scrolling
+            // on macOS moves exactly 1 step per gesture instead of multiple steps.
+            static float wheel_accum = 0.f;
+            static ImGuiID wheel_accum_id = 0;
+            if (wheel_accum_id != id)
+            {
+                wheel_accum = 0.f;
+                wheel_accum_id = id;
+            }
             float mw = context.IO.MouseWheel;
-            // Normalize wheel delta to +/-1 on all platforms
-            // Windows can return values > 1 for high-resolution mice or smooth scrolling
-            if (mw > 0.f)
-                mw = 1.f;
-            if (mw < 0.f)
-                mw = -1.f;
-            const float accer = context.IO.KeyCtrl || context.IO.KeyShift ? 5.f : 1.f;
-            v_new = ImClamp(*out_value + (ImS32) (mw * accer), v_min, v_max);
+            wheel_accum += mw;
+            int steps = static_cast<int>(wheel_accum); // truncate toward zero
+            if (steps != 0)
+            {
+                wheel_accum -= static_cast<float>(steps);
+                // Clamp to +/-1 per event for discrete single-step behavior
+                steps = steps > 0 ? 1 : -1;
+                const float accer = context.IO.KeyCtrl || context.IO.KeyShift ? 5.f : 1.f;
+                v_new = ImClamp(*out_value + (ImS32) (steps * accer), v_min, v_max);
+            }
         }
     }
 

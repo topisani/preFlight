@@ -80,8 +80,8 @@ KBShortcutsDialog::KBShortcutsDialog()
 
     wxGetApp().UpdateDlgDarkUI(this);
 
-#ifdef __linux__
-    // workaround to correct pages layout
+#ifndef _WIN32
+    // workaround to correct pages layout on Linux/macOS
     book->Bind(wxEVT_NOTEBOOK_PAGE_CHANGED, [book](wxBookCtrlEvent &e) { book->GetPage(e.GetSelection())->Fit(); });
     const wxSize sz = this->GetBestSize();
     this->SetSize(sz.x + 1, sz.y);

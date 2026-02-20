@@ -1049,7 +1049,7 @@ void traverse_pt(const PolyNode *tree, Polygons *out)
         return; // terminates recursion
 
     // Push the contour of the current level
-    out->emplace_back(tree->Polygon()); // Clipper2: Polygon() method
+    out->emplace_back(ClipperPath_to_Slic3rPolygon(tree->Polygon()));
 
     // Do the recursion for all the children.
     for (size_t i = 0; i < tree->Count(); ++i)

@@ -30,27 +30,29 @@
         {
             "name": "mac_universal_x86",
             "inherits": "default",
-            "binaryDir": "${sourceDir}/build-x86_64",
+            "binaryDir": "${sourceDir}/build-mac_universal_x86",
             "condition": {
                 "type": "equals",
                 "lhs": "${hostSystemName}",
                 "rhs": "Darwin"
             },
             "cacheVariables": {
-                "CMAKE_OSX_ARCHITECTURES": "x86_64"
+                "CMAKE_OSX_ARCHITECTURES": "x86_64",
+                "CMAKE_OSX_DEPLOYMENT_TARGET": "10.13"
             }
         },
         {
             "name": "mac_universal_arm",
             "inherits": "default",
-            "binaryDir": "${sourceDir}/build-arm64",
+            "binaryDir": "${sourceDir}/build-mac_universal_arm",
             "condition": {
                 "type": "equals",
                 "lhs": "${hostSystemName}",
                 "rhs": "Darwin"
             },
             "cacheVariables": {
-                "CMAKE_OSX_ARCHITECTURES": "arm64"
+                "CMAKE_OSX_ARCHITECTURES": "arm64",
+                "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0"
             }
         }
     ]

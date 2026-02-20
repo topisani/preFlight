@@ -175,15 +175,15 @@ public:
                    {
                        event.Skip();
 
-                       // preFlight: Lightweight DPI update after cross-monitor drag.
-                       // Full rescale() is skipped (expensive UI rebuild), but em_unit must
-                       // reflect the new DPI so ImGui Legend sidebar sizes correctly.
-                       // MainFrame's MOVE_END handler propagates this to GUI_App::m_em_unit.
-                       if (is_new_scale_factor())
-                           m_em_unit = std::max<int>(10, int(m_scale_factor * m_em_unit_from_font_size));
-
-                       m_prev_scale_factor = m_scale_factor;
                        m_can_rescale = true;
+
+                       // preFlight: If DPI changed during the drag (cross-monitor move),
+                       // perform the full rescale now that the move is complete.
+                       // This ensures all active controls resize to the new DPI.
+                       if (is_new_scale_factor())
+                           rescale(wxRect());
+                       else
+                           m_prev_scale_factor = m_scale_factor;
                    });
 
         this->Bind(wxEVT_SYS_COLOUR_CHANGED,

@@ -5,6 +5,9 @@ if (MSVC OR APPLE)
     if (APPLE)
         # Only disable NEON extension for Apple ARM builds, leave it enabled for Raspberry PI.
         set(_disable_neon_extension "-DPNG_ARM_NEON:STRING=off")
+        # libpng's genout.cmake has a race condition generating prefix.out under
+        # parallel Make with CMake 4.x — limit to single-threaded build on macOS
+        set(DEP_PNG_MAX_THREADS 1)
     else ()
         set(_disable_neon_extension "")
     endif ()

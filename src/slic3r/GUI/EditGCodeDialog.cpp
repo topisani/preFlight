@@ -580,11 +580,11 @@ void ParamsModel::GetValue(wxVariant &variant, const wxDataViewItem &item, unsig
 
     ParamsNode *node = static_cast<ParamsNode *>(item.GetID());
     if (col == (unsigned int) 0)
-#ifdef __linux__
+#ifndef _WIN32
         variant << wxDataViewIconText(node->text, get_bmp_bundle(node->icon_name)->GetIconFor(m_ctrl->GetParent()));
 #else
         variant << DataViewBitmapText(node->text, get_bmp_bundle(node->icon_name)->GetBitmapFor(m_ctrl->GetParent()));
-#endif //__linux__
+#endif
     else
         wxLogError("DiffModel::GetValue: wrong column %d", col);
 }
@@ -596,7 +596,7 @@ bool ParamsModel::SetValue(const wxVariant &variant, const wxDataViewItem &item,
     ParamsNode *node = static_cast<ParamsNode *>(item.GetID());
     if (col == (unsigned int) 0)
     {
-#ifdef __linux__
+#ifndef _WIN32
         wxDataViewIconText data;
         data << variant;
         node->icon = data.GetIcon();
@@ -675,7 +675,7 @@ ParamsViewCtrl::ParamsViewCtrl(wxWindow *parent, wxSize size)
     this->AssociateModel(model);
     model->SetAssociatedControl(this);
 
-#ifdef __linux__
+#ifndef _WIN32
     wxDataViewIconTextRenderer *rd = new wxDataViewIconTextRenderer();
 #ifdef SUPPORTS_MARKUP
     rd->EnableMarkup(true);
@@ -685,7 +685,7 @@ ParamsViewCtrl::ParamsViewCtrl(wxWindow *parent, wxSize size)
 #else
     wxDataViewColumn *column = new wxDataViewColumn("", new BitmapTextRenderer(true, wxDATAVIEW_CELL_INERT), 0,
                                                     20 * m_em_unit, wxALIGN_TOP, wxDATAVIEW_COL_RESIZABLE);
-#endif //__linux__
+#endif
     this->AppendColumn(column);
     this->SetExpanderColumn(column);
 }

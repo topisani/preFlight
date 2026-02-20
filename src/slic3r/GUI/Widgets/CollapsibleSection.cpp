@@ -12,6 +12,10 @@
 #include <wx/graphics.h>
 #include <wx/settings.h>
 
+#ifdef __APPLE__
+#include "../../Utils/MacDarkMode.hpp"
+#endif
+
 namespace Slic3r
 {
 namespace GUI
@@ -88,6 +92,17 @@ wxBEGIN_EVENT_TABLE(CollapsibleSection, wxPanel) EVT_PAINT(CollapsibleSection::O
     if (m_pinned_container)
         m_pinned_container->Refresh();
     Refresh();
+}
+
+CollapsibleSection::~CollapsibleSection()
+{
+#ifdef __APPLE__
+    // preFlight: On macOS, wxWidgetCocoaImpl::~wxWidgetCocoaImpl() can throw an
+    // Objective-C exception when the native NSView hierarchy is partially torn down
+    // during app shutdown.  Destroy children inside an @try/@catch wrapper so the
+    // exception doesn't propagate out of this noexcept destructor and crash.
+    Slic3r::GUI::mac_safe_destroy_children(this);
+#endif
 }
 
 void CollapsibleSection::CreateHeader()

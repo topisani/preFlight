@@ -78,10 +78,9 @@ MsgDialog::MsgDialog(wxWindow *parent, const wxString &title, const wxString &he
     , content_sizer(new wxBoxSizer(wxVERTICAL))
     , btn_sizer(new wxBoxSizer(wxHORIZONTAL))
 {
-#ifndef _WIN32
-    // preFlight: apply theme background on Linux/macOS (UpdateDarkUI is Windows-only)
+    // preFlight: Set theme background early so get_html_bg_color() reads the correct color
+    // when building HTML content (before finalize()/UpdateDlgDarkUI completes theming)
     this->SetBackgroundColour(wxGetApp().get_window_default_clr());
-#endif
     boldfont.SetWeight(wxFONTWEIGHT_BOLD);
 
     this->SetFont(wxGetApp().normal_font());

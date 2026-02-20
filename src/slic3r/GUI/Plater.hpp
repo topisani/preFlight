@@ -191,6 +191,7 @@ public:
     bool is_preview_shown() const;
     bool is_preview_loaded() const;
     bool is_view3D_shown() const;
+    bool is_slicing() const;
 
     bool are_view3D_labels_shown() const;
     void show_view3D_labels(bool show);

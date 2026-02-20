@@ -326,7 +326,48 @@ inline bool operator!(AdjustableFeatureType a)
     return static_cast<uint32_t>(a) == 0;
 }
 
-struct GCodeMoveSegment;
+// GCodeMoveSegment must be fully defined before CoolingLine because
+// std::vector<GCodeMoveSegment> requires a complete type.
+// is_arc()/is_ccw() reference CoolingLine::Type, so they are defined after CoolingLine.
+struct GCodeMoveSegment
+{
+    Vec4f position_start = Vec4f::Zero();
+    Vec4f position_end = Vec4f::Zero();
+    float length = 0.f;
+
+    size_t line_start = 0; // Position in a G-code string.
+    size_t line_end = 0;   // Position in a G-code string.
+
+    uint32_t type = 0; // Same flags as CoolingLine::Type.
+
+    Vec2f ij_params = {0.f, 0.f}; // I, J for arcs.
+
+    GCodeMoveSegment(const Vec4f &position_start, const Vec4f &position_end, float length, size_t line_start,
+                     size_t line_end, uint32_t type)
+        : position_start(position_start)
+        , position_end(position_end)
+        , length(length)
+        , line_start(line_start)
+        , line_end(line_end)
+        , type(type)
+    {
+    }
+
+    GCodeMoveSegment(const Vec4f &position_start, const Vec4f &position_end, float length, size_t line_start,
+                     size_t line_end, uint32_t type, const Vec2f &ij_params)
+        : position_start(position_start)
+        , position_end(position_end)
+        , length(length)
+        , line_start(line_start)
+        , line_end(line_end)
+        , type(type)
+        , ij_params(ij_params)
+    {
+    }
+
+    bool is_arc() const;
+    bool is_ccw() const;
+};
 
 struct CoolingLine
 {
@@ -444,45 +485,9 @@ struct CoolingLine
     inline float time_max() const { return this->adjustable_time_max + this->non_adjustable_time; }
 };
 
-struct GCodeMoveSegment
-{
-    Vec4f position_start = Vec4f::Zero();
-    Vec4f position_end = Vec4f::Zero();
-    float length = 0.f;
-
-    size_t line_start = 0; // Position in a G-code string.
-    size_t line_end = 0;   // Position in a G-code string.
-
-    uint32_t type = 0; // Same flags as CoolingLine::Type.
-
-    Vec2f ij_params = {0.f, 0.f}; // I, J for arcs.
-
-    GCodeMoveSegment(const Vec4f &position_start, const Vec4f &position_end, float length, size_t line_start,
-                     size_t line_end, uint32_t type)
-        : position_start(position_start)
-        , position_end(position_end)
-        , length(length)
-        , line_start(line_start)
-        , line_end(line_end)
-        , type(type)
-    {
-    }
-
-    GCodeMoveSegment(const Vec4f &position_start, const Vec4f &position_end, float length, size_t line_start,
-                     size_t line_end, uint32_t type, const Vec2f &ij_params)
-        : position_start(position_start)
-        , position_end(position_end)
-        , length(length)
-        , line_start(line_start)
-        , line_end(line_end)
-        , type(type)
-        , ij_params(ij_params)
-    {
-    }
-
-    bool is_arc() const { return (type & CoolingLine::TYPE_G2G3) != 0; }
-    bool is_ccw() const { return (type & CoolingLine::TYPE_G2G3_CCW) != 0; }
-};
+// Deferred definitions — need CoolingLine::Type enum.
+inline bool GCodeMoveSegment::is_arc() const { return (type & CoolingLine::TYPE_G2G3) != 0; }
+inline bool GCodeMoveSegment::is_ccw() const { return (type & CoolingLine::TYPE_G2G3_CCW) != 0; }
 
 std::string emit_feedrate(const float feedrate)
 {
@@ -1784,6 +1789,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
         float start_y;
         float end_x;
         float end_y;
+        float prev_abs_e; // Absolute E position before this move (for absolute E mode split)
     };
     std::vector<EmittedMove> emitted_moves;
 
@@ -1792,6 +1798,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
 
     // Track current position for segment splitting
     float track_x = 0.0f, track_y = 0.0f;
+    float track_e = 0.0f; // Previous absolute E position (for absolute E mode split)
     bool have_track_pos = false;
 
     for (const CoolingLine *line : lines)
@@ -1951,7 +1958,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
                                 0.0f, // No XY length
                                 0.0f, // No feedrate for retract
                                 retract_time, FanRampMoveType::Retract, last_x, last_y, last_x,
-                                last_y // Position unchanged
+                                last_y, track_e // Position unchanged
                             });
                         }
                     }
@@ -1971,7 +1978,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
                                 0.0f, // No XY length
                                 0.0f, // No feedrate for unretract
                                 unretract_time, FanRampMoveType::Unretract, last_x, last_y, last_x,
-                                last_y // Position unchanged
+                                last_y, track_e // Position unchanged
                             });
                         }
                     }
@@ -1980,7 +1987,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
                              (gap_line_start[1] == '0' || gap_line_start[1] == '1') && gap_line_start[2] == ' ')
                     {
                         bool is_travel = (gap_line_start[1] == '0');
-                        float x = 0, y = 0;
+                        float x = 0, y = 0, e_val = 0;
                         bool has_x = false, has_y = false, has_e = false;
                         float line_feedrate = 0;
 
@@ -1999,6 +2006,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
                             }
                             else if (*p == 'E')
                             {
+                                e_val = strtof(p + 1, nullptr);
                                 has_e = true;
                             }
                             else if (*p == 'F')
@@ -2035,7 +2043,15 @@ std::string CoolingBuffer::apply_layer_cooldown(
                                 emitted_moves.push_back({gap_start_pos + line_offset, gap_start_pos + (gap_ptr - pos),
                                                          length, effective_feedrate_mmmin, move_time,
                                                          is_travel ? FanRampMoveType::Travel : FanRampMoveType::Extrude,
-                                                         last_x, last_y, new_x, new_y});
+                                                         last_x, last_y, new_x, new_y, track_e});
+                            }
+                            // Update E tracking for absolute mode
+                            if (has_e)
+                            {
+                                if (m_config.use_relative_e_distances.value)
+                                    track_e += e_val;
+                                else
+                                    track_e = e_val;
                             }
                             last_x = new_x;
                             last_y = new_y;
@@ -2047,6 +2063,13 @@ std::string CoolingBuffer::apply_layer_cooldown(
                                 last_x = x;
                             if (has_y)
                                 last_y = y;
+                            if (has_e)
+                            {
+                                if (m_config.use_relative_e_distances.value)
+                                    track_e += e_val;
+                                else
+                                    track_e = e_val;
+                            }
                             have_last_pos = true;
                         }
                     }
@@ -2279,7 +2302,19 @@ std::string CoolingBuffer::apply_layer_cooldown(
 
                                 if (has_e)
                                 {
-                                    float e_first = orig_e * split_fraction;
+                                    float e_first;
+                                    if (m_config.use_relative_e_distances.value)
+                                    {
+                                        // Relative E: split proportionally
+                                        e_first = orig_e * split_fraction;
+                                    }
+                                    else
+                                    {
+                                        // Absolute E: interpolate between previous and current position
+                                        float prev_e = split_move.prev_abs_e;
+                                        float delta_e = orig_e - prev_e;
+                                        e_first = prev_e + delta_e * split_fraction;
+                                    }
                                     snprintf(buf, sizeof(buf), "G1 X%.3f Y%.3f E%.5f\n", split_x, split_y, e_first);
                                 }
                                 else
@@ -2292,7 +2327,11 @@ std::string CoolingBuffer::apply_layer_cooldown(
                                 // No feedrate needed - already set by first part
                                 if (has_e)
                                 {
-                                    float e_second = orig_e * (1.0f - split_fraction);
+                                    float e_second;
+                                    if (m_config.use_relative_e_distances.value)
+                                        e_second = orig_e * (1.0f - split_fraction);
+                                    else
+                                        e_second = orig_e; // Absolute: end at original endpoint
                                     snprintf(buf, sizeof(buf), "G1 X%.3f Y%.3f E%.5f\n", split_move.end_x,
                                              split_move.end_y, e_second);
                                 }
@@ -2542,7 +2581,18 @@ std::string CoolingBuffer::apply_layer_cooldown(
                     float move_time = time_estimator.estimate_move_time(line->length(), feedrate_mms, is_travel);
 
                     emitted_moves.push_back({move_start_pos, new_gcode.size(), line->length(), float(current_feedrate),
-                                             move_time, move_type, track_x, track_y, end_x, end_y});
+                                             move_time, move_type, track_x, track_y, end_x, end_y, track_e});
+
+                    // Update E tracking
+                    size_t e_pos = emitted.find('E');
+                    if (e_pos != std::string_view::npos)
+                    {
+                        float e_val = strtof(new_gcode.data() + move_start_pos + e_pos + 1, nullptr);
+                        if (m_config.use_relative_e_distances.value)
+                            track_e += e_val;
+                        else
+                            track_e = e_val;
+                    }
 
                     // Update position tracking
                     track_x = end_x;
@@ -2602,7 +2652,18 @@ std::string CoolingBuffer::apply_layer_cooldown(
                 float move_time = time_estimator.estimate_move_time(line->length(), feedrate_mms, is_travel);
 
                 emitted_moves.push_back({move_start_pos, new_gcode.size(), line->length(), float(current_feedrate),
-                                         move_time, move_type, track_x, track_y, end_x, end_y});
+                                         move_time, move_type, track_x, track_y, end_x, end_y, track_e});
+
+                // Update E tracking
+                size_t e_pos = emitted.find('E');
+                if (e_pos != std::string_view::npos)
+                {
+                    float e_val = strtof(new_gcode.data() + move_start_pos + e_pos + 1, nullptr);
+                    if (m_config.use_relative_e_distances.value)
+                        track_e += e_val;
+                    else
+                        track_e = e_val;
+                }
 
                 // Update position tracking
                 track_x = end_x;

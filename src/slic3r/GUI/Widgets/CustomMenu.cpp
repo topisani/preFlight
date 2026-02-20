@@ -12,6 +12,10 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__APPLE__)
+#include "../../Utils/MacDarkMode.hpp"
+#elif defined(__WXGTK__)
+#include <gtk/gtk.h>
 #endif
 
 namespace Slic3r
@@ -539,6 +543,12 @@ const CustomMenuItem *CustomMenu::FindItemById(int id) const
 void CustomMenu::CalculateSize()
 {
     // Get DPI scale factor for proper high-DPI rendering
+#ifdef __APPLE__
+    // preFlight: On macOS, wxWidgets operates in logical (point) coordinates.
+    // GetContentScaleFactor() returns the Retina backing scale (2.0) which is
+    // NOT a DPI scale — the framework handles Retina transparently.
+    m_dpiScale = 1.0;
+#else
     // Try multiple methods to get reliable DPI scale
     m_dpiScale = GetContentScaleFactor();
 
@@ -562,6 +572,7 @@ void CustomMenu::CalculateSize()
 
     if (m_dpiScale < 1.0)
         m_dpiScale = 1.0; // Safety: never scale down
+#endif
 
     // Calculate all DPI-scaled values upfront
     m_scaledPadding = static_cast<int>(m_padding * m_dpiScale);
@@ -667,6 +678,12 @@ void CustomMenu::CalculateSize()
         SetWindowRgn(hwnd, hrgn, TRUE);
         // Note: Windows takes ownership of the region, don't delete it
     }
+#elif defined(__APPLE__)
+    // preFlight: On macOS, make the window non-opaque with a clear background
+    // and set the content view's layer corner radius so the background fill
+    // is clipped to the rounded shape (equivalent to Windows' SetWindowRgn).
+    mac_set_window_transparent(GetHandle());
+    mac_set_view_corner_radius(GetHandle(), m_scaledCornerRadius);
 #endif
 }
 
@@ -721,7 +738,51 @@ void CustomMenu::ShowAt(const wxPoint &pos, wxWindow *parent)
     }
 
     SetPosition(finalPos);
+#ifdef __APPLE__
+    // preFlight: On macOS, wxPopupTransientWindow::Popup() installs Cocoa event
+    // tracking that steals focus and doesn't release it on dismiss, blocking
+    // left-click events. Bypass it entirely — Show()+Raise() is sufficient since
+    // our CustomMenuMouseFilter handles click-outside-to-dismiss.
+    Show(true);
+    Raise();
+#else
     Popup();
+#endif
+
+#ifdef __WXGTK__
+    // preFlight: On Linux/GTK3, clip the popup to a rounded rect using a cairo region.
+    // Must be applied AFTER Popup() because the GDK window isn't realized until then.
+    {
+        GtkWidget *widget = static_cast<GtkWidget *>(GetHandle());
+        GdkWindow *gdkWin = widget ? gtk_widget_get_window(widget) : nullptr;
+        if (gdkWin)
+        {
+            cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_A1, m_totalWidth, m_totalHeight);
+            cairo_t *cr = cairo_create(surf);
+
+            // Draw a rounded rectangle path
+            double r = m_scaledCornerRadius;
+            double w = m_totalWidth;
+            double h = m_totalHeight;
+            cairo_new_sub_path(cr);
+            cairo_arc(cr, w - r, r, r, -M_PI / 2.0, 0);
+            cairo_arc(cr, w - r, h - r, r, 0, M_PI / 2.0);
+            cairo_arc(cr, r, h - r, r, M_PI / 2.0, M_PI);
+            cairo_arc(cr, r, r, r, M_PI, 3.0 * M_PI / 2.0);
+            cairo_close_path(cr);
+            cairo_set_source_rgba(cr, 1, 1, 1, 1);
+            cairo_fill(cr);
+
+            cairo_region_t *region = gdk_cairo_region_create_from_surface(surf);
+            gdk_window_shape_combine_region(gdkWin, region, 0, 0);
+
+            cairo_region_destroy(region);
+            cairo_destroy(cr);
+            cairo_surface_destroy(surf);
+        }
+    }
+#endif
+
     // If this is a root context menu, register it as active so it can be dismissed later
     if (!m_parentMenu)
     {
@@ -769,8 +830,17 @@ std::shared_ptr<CustomMenu> CustomMenu::FromWxMenu(wxMenu *menu, wxWindow *event
         else if (wxItem->IsSubMenu())
         {
             auto submenu = FromWxMenu(wxItem->GetSubMenu(), eventHandler);
+            // Prefer the original SVG icon name for DPI-aware rendering; fall back to
+            // the rasterized bitmap for items not registered via append_menu_item().
             wxBitmapBundle icon;
-            if (wxItem->GetBitmap().IsOk())
+            std::string iconName = get_menuitem_icon_name(wxItem->GetId());
+            if (!iconName.empty())
+            {
+                wxBitmapBundle *bndl = get_bmp_bundle(iconName);
+                if (bndl && bndl->IsOk())
+                    icon = *bndl;
+            }
+            else if (wxItem->GetBitmap().IsOk())
                 icon = wxBitmapBundle::FromBitmap(wxItem->GetBitmap());
 
             customMenu->m_items.emplace_back(wxItem->GetId(), wxItem->GetItemLabelText(), submenu, icon);
@@ -778,8 +848,17 @@ std::shared_ptr<CustomMenu> CustomMenu::FromWxMenu(wxMenu *menu, wxWindow *event
         }
         else
         {
+            // Prefer the original SVG icon name for DPI-aware rendering; fall back to
+            // the rasterized bitmap for items not registered via append_menu_item().
             wxBitmapBundle icon;
-            if (wxItem->GetBitmap().IsOk())
+            std::string iconName = get_menuitem_icon_name(wxItem->GetId());
+            if (!iconName.empty())
+            {
+                wxBitmapBundle *bndl = get_bmp_bundle(iconName);
+                if (bndl && bndl->IsOk())
+                    icon = *bndl;
+            }
+            else if (wxItem->GetBitmap().IsOk())
                 icon = wxBitmapBundle::FromBitmap(wxItem->GetBitmap());
 
             // Use GetItemLabel() to preserve the full label with shortcut
@@ -921,7 +1000,14 @@ void CustomMenu::OnDismiss()
         }
     }
 
+#ifdef __APPLE__
+    // preFlight: We bypassed Popup() on macOS, so just hide the window.
+    // Calling wxPopupTransientWindow::OnDismiss() after Show()/Hide() can
+    // trigger Cocoa assertions about unbalanced event tracking.
+    Hide();
+#else
     wxPopupTransientWindow::OnDismiss();
+#endif
 }
 
 void CustomMenu::OnPaint(wxPaintEvent & /*evt*/)
@@ -1001,7 +1087,14 @@ void CustomMenu::DrawItem(wxDC &dc, const CustomMenuItem &item, const wxRect &re
             wxBitmap bmp = item.icon.GetBitmapFor(this);
             if (bmp.IsOk())
             {
-                int iconY = rect.y + (rect.height - bmp.GetHeight()) / 2;
+#ifdef __APPLE__
+                // preFlight: On Retina, GetHeight() returns physical pixels but
+                // drawing coordinates are logical.  Use GetLogicalHeight().
+                int bmpH = bmp.GetLogicalHeight();
+#else
+                int bmpH = bmp.GetHeight();
+#endif
+                int iconY = rect.y + (rect.height - bmpH) / 2;
                 dc.DrawBitmap(bmp, x + m_scaledIconPadding, iconY, true);
             }
         }

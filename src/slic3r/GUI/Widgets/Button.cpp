@@ -9,6 +9,7 @@
 #include <wx/dcgraph.h>
 #include <wx/dc.h>
 #include <wx/dcclient.h>
+#include <wx/dcbuffer.h>
 
 // DPI scaling helper
 static int GetScaledIconTextPadding()
@@ -161,7 +162,14 @@ void Button::Rescale()
 void Button::paintEvent(wxPaintEvent &evt)
 {
     // depending on your system you may need to look at double-buffered dcs
+#ifdef __APPLE__
+    // preFlight: On macOS, use wxBufferedPaintDC (matching StaticBox::paintEvent) to ensure
+    // the custom-drawn background fully overwrites the native view content. Bare wxPaintDC
+    // on disabled NSViews can allow the native background to bleed through.
+    wxBufferedPaintDC dc(this);
+#else
     wxPaintDC dc(this);
+#endif
     render(dc);
 }
 

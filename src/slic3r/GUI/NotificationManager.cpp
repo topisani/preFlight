@@ -3613,8 +3613,13 @@ bool NotificationManager::update_notifications(GLCanvas3D &canvas)
         ++it;
     }
 
-    // request next frame in future
-    if (next_render < max)
+    // preFlight: Only schedule FUTURE frames (ms > 0) for notification animations.
+    // When next_render == 0 it means "render now", but on_idle already renders the
+    // current frame when request_render is true. Calling schedule_extra_frame(0) here
+    // sets m_dirty + wxWakeUpIdle(), creating a feedback loop: on_idle renders, clears
+    // m_dirty, but the WM_NULL from wxWakeUpIdle triggers another idle cycle, which
+    // calls update_notifications again, which calls schedule_extra_frame(0) again...
+    if (next_render > 0 && next_render < max)
         canvas.schedule_extra_frame(int(next_render));
 
     return request_render;

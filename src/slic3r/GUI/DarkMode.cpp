@@ -654,25 +654,39 @@ static LRESULT CALLBACK TreeViewParentSubclassProc(HWND hwnd, UINT uMsg, WPARAM 
                 FillRect(nmcd->nmcd.hdc, &nmcd->nmcd.rc, hBrush);
                 DeleteObject(hBrush);
 
-                // Get item text
+                // Get item text and image index
                 HWND hTree = (HWND) dwRefData;
                 HTREEITEM hItem = (HTREEITEM) nmcd->nmcd.dwItemSpec;
                 wchar_t szText[256] = {0};
                 TVITEMW tvi = {0};
-                tvi.mask = TVIF_TEXT | TVIF_HANDLE;
+                tvi.mask = TVIF_TEXT | TVIF_HANDLE | TVIF_IMAGE;
                 tvi.hItem = hItem;
                 tvi.pszText = szText;
                 tvi.cchTextMax = 256;
                 TreeView_GetItem(hTree, &tvi);
 
+                int padding = 4;
+                int iconOffset = 0;
+
+                // Draw tree item icon if present
+                HIMAGELIST hImgList = TreeView_GetImageList(hTree, TVSIL_NORMAL);
+                if (hImgList && tvi.iImage >= 0)
+                {
+                    int iconW = 0, iconH = 0;
+                    ImageList_GetIconSize(hImgList, &iconW, &iconH);
+                    int iconY = nmcd->nmcd.rc.top + (nmcd->nmcd.rc.bottom - nmcd->nmcd.rc.top - iconH) / 2;
+                    ImageList_Draw(hImgList, tvi.iImage, nmcd->nmcd.hdc, nmcd->nmcd.rc.left + padding, iconY,
+                                   ILD_TRANSPARENT);
+                    iconOffset = iconW + padding;
+                }
+
                 // Measure text width
                 SIZE textSize = {0};
                 GetTextExtentPoint32W(nmcd->nmcd.hdc, szText, (int) wcslen(szText), &textSize);
 
-                // Calculate text rect with padding
-                int padding = 4;
+                // Calculate text rect with padding (after icon)
                 RECT rcText = nmcd->nmcd.rc;
-                rcText.left += padding;
+                rcText.left += padding + iconOffset;
                 int textRight = rcText.left + textSize.cx + padding;
                 if (textRight > nmcd->nmcd.rc.right)
                     textRight = nmcd->nmcd.rc.right;

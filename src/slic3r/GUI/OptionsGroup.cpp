@@ -31,6 +31,7 @@
 
 #include <utility>
 #include <wx/bookctrl.h> // IWYU pragma: keep
+#include <wx/dcclient.h>
 #include <wx/numformatter.h>
 #include <boost/algorithm/string/split.hpp>
 #include <boost/algorithm/string/classification.hpp>
@@ -470,14 +471,25 @@ void OptionsGroup::activate_line(Line &line)
             // description lines
             // Store the widget sizer so sys_color_changed can update it
             line.widget_sizer = line.widget(this->ctrl_parent());
-            sizer->Add(line.widget_sizer, 0, wxEXPAND | wxALL, wxOSX ? 0 : (3 * wxGetApp().em_unit() / 2));
+            // preFlight: use consistent padding on all platforms — the original wxOSX ? 0
+            // relied on native wxStaticBox padding, but FlatStaticBox needs explicit margins.
+            // Use LEFT+TOP only — bottom padding is handled by the group border itself.
+#ifdef __WXOSX__
+            sizer->Add(line.widget_sizer, 0, wxEXPAND | wxLEFT | wxTOP, (3 * wxGetApp().em_unit() / 2));
+#else
+            sizer->Add(line.widget_sizer, 0, wxEXPAND | wxALL, (3 * wxGetApp().em_unit() / 2));
+#endif
             return;
         }
         if (!line.get_extra_widgets().empty())
         {
             // Store the sizer so sys_color_changed can update it
             line.extra_widget_sizer = new wxBoxSizer(wxHORIZONTAL);
-            sizer->Add(line.extra_widget_sizer, 1, wxEXPAND | wxALL, wxOSX ? 0 : (3 * wxGetApp().em_unit() / 2));
+#ifdef __WXOSX__
+            sizer->Add(line.extra_widget_sizer, 1, wxEXPAND | wxLEFT | wxTOP, (3 * wxGetApp().em_unit() / 2));
+#else
+            sizer->Add(line.extra_widget_sizer, 1, wxEXPAND | wxALL, (3 * wxGetApp().em_unit() / 2));
+#endif
 
             bool is_first_item = true;
             for (auto extra_widget : line.get_extra_widgets())
@@ -570,6 +582,12 @@ void OptionsGroup::activate_line(Line &line)
                                          label_style);
                 label->SetBackgroundStyle(wxBG_STYLE_PAINT);
                 label->SetFont(wxGetApp().normal_font());
+#ifdef __APPLE__
+                // preFlight: wxBG_STYLE_PAINT on macOS doesn't auto-fill the background,
+                // causing the native background to bleed through. Set explicitly.
+                label->SetBackgroundColour(this->ctrl_parent()->GetBackgroundColour());
+                label->SetForegroundColour(this->ctrl_parent()->GetForegroundColour());
+#endif
                 label->Wrap(label_width * wxGetApp().em_unit()); // avoid a Linux/GTK bug
             }
             if (!line.near_label_widget)
@@ -652,6 +670,10 @@ void OptionsGroup::activate_line(Line &line)
                                          wxALIGN_RIGHT);
                 label->SetBackgroundStyle(wxBG_STYLE_PAINT);
                 label->SetFont(wxGetApp().normal_font());
+#ifdef __APPLE__
+                label->SetBackgroundColour(this->ctrl_parent()->GetBackgroundColour());
+                label->SetForegroundColour(this->ctrl_parent()->GetForegroundColour());
+#endif
                 h_sizer->Add(label, 0, wxALIGN_CENTER_VERTICAL, 0);
             }
 
@@ -675,6 +697,10 @@ void OptionsGroup::activate_line(Line &line)
                     wxSize(sidetext_width != -1 ? sidetext_width * wxGetApp().em_unit() : -1, -1), wxALIGN_LEFT);
                 sidetext->SetBackgroundStyle(wxBG_STYLE_PAINT);
                 sidetext->SetFont(wxGetApp().normal_font());
+#ifdef __APPLE__
+                sidetext->SetBackgroundColour(this->ctrl_parent()->GetBackgroundColour());
+                sidetext->SetForegroundColour(this->ctrl_parent()->GetForegroundColour());
+#endif
                 h_sizer->Add(sidetext, 0, wxLEFT | wxALIGN_CENTER_VERTICAL, (wxGetApp().em_unit() * 4) / 10);
             }
 
@@ -806,9 +832,25 @@ bool OptionsGroup::activate(std::function<void()> throw_if_canceled /* = [](){}*
                 // The static box border is drawn at approximately textHeight/2 from the top
                 // We want our header centered on that border line
                 int header_height = m_header_panel->GetSize().GetHeight();
+#ifdef __WXOSX__
+                // preFlight: OnPaintMac draws the border using a bold version of
+                // the widget font.  Use the same bold font to compute border_y so
+                // the header panel is centered on the actually-drawn border line.
+                wxFont boldMeasure = stb->GetFont();
+                boldMeasure.SetWeight(wxFONTWEIGHT_BOLD);
+                wxClientDC measDc(stb);
+                measDc.SetFont(boldMeasure);
+                int label_height = measDc.GetCharHeight();
+#else
                 int label_height = txtExt.GetHeight();
+#endif
                 int border_y = label_height / 2;                // Where the top border line is drawn
                 int y_pos = border_y - (header_height / 2) + 1; // +1 for fine tuning
+#ifdef __WXOSX__
+                // preFlight: On macOS, children positioned above the content view
+                // top (Y < 0) get clipped.  Clamp to 0 so the header is never cut off.
+                y_pos = std::max(0, y_pos);
+#endif
 
                 // Use x offset of 8 to match where static box labels normally appear
                 m_header_panel->SetPosition(wxPoint(8, y_pos));
@@ -859,9 +901,11 @@ bool OptionsGroup::activate(std::function<void()> throw_if_canceled /* = [](){}*
         else
             stb = nullptr;
         sizer = (staticbox ? new wxStaticBoxSizer(stb, wxVERTICAL) : new wxBoxSizer(wxVERTICAL));
-#ifdef __WXGTK__
-        // preFlight: GtkFrame label is removed in FlatStaticBox so content starts at top.
-        // Add top padding so controls don't overlap the custom-drawn border.
+#if defined(__WXGTK__) || defined(__WXOSX__)
+        // preFlight: On GTK, GtkFrame label is removed in FlatStaticBox.
+        // On macOS, NSBox title is set to NSNoTitle so the content view is
+        // the full widget.  In both cases, add top padding so controls don't
+        // overlap the custom-drawn border and label text.
         if (staticbox)
             sizer->AddSpacer(wxGetApp().em_unit());
 #endif
