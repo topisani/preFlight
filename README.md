@@ -319,14 +319,6 @@ run_build.bat -ninja
 run_build.bat -ninja -debug
 ```
 
-**Build Options:**
-| Flag | Description |
-|------|-------------|
-| `-ninja` | Use Ninja build system (recommended) |
-| `-debug` | Build debug configuration |
-| `-clean` | Full rebuild from scratch |
-| `-flush` | Pick up image/resource changes |
-
 ### Linux
 
 ```bash
@@ -336,13 +328,27 @@ run_build.bat -ninja -debug
 # Build release
 ./build_linux.sh
 
-# Package as AppImage
-./pack_appimage.sh
 ```
 
 ### macOS
 
-Not yet available.
+  ```bash
+  # Prerequisites
+  brew install cmake ninja pkg-config
+
+  # Build dependencies (first time only)
+  ./build_deps.sh
+
+  # Build release
+  ./build_macos.sh
+```
+
+**Build Option (all platforms)**
+| Flag | Description |
+|------|-------------|
+| `-ninja` | Use Ninja build system |
+| `-debug` | Build debug configuration |
+| `-clean` | Full rebuild from scratch |
 
 ---
 
