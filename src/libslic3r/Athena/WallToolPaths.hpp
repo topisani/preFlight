@@ -68,7 +68,7 @@ public:
                   coord_t wall_0_inset, coordf_t layer_height, const PrintObjectConfig &print_object_config,
                   const PrintConfig &print_config, coord_t fixed_width_0, coord_t fixed_width_x, coord_t spacing_0,
                   coord_t spacing_x, coord_t spacing_innermost = 0, int layer_id = -1,
-                  double min_bead_width_factor = 1.0);
+                  double min_bead_width_factor = 1.0, coord_t thin_wall_snap_precision = 10000);
 
     /*!
      * Generates the Toolpaths
@@ -163,6 +163,7 @@ private:
     coord_t spacing_override_internal;  //<! Spacing override for internal perimeters (0 = not set)
     coord_t spacing_override_innermost; //<! Spacing override for innermost perimeter (0 = use spacing_override_internal)
     int debug_layer_id;                 //<! Layer ID for debug output (-1 = unknown)
+    coord_t thin_wall_snap_precision;   //<! Snap grid for thin wall width rounding (nanometers)
     bool m_thin_contour_regeneration_attempted{false}; //<! Prevents infinite regeneration loops
 };
 

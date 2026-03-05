@@ -1287,6 +1287,7 @@ static inline std::tuple<Polygons, Polygons, Polygons, Polygons, float> detect_o
 
     const bool support_auto = object_config.support_material.value && object_config.support_material_auto.value;
     const bool buildplate_only = !annotations.buildplate_covered.empty();
+
     // If user specified a custom angle threshold, convert it to radians.
     // Zero means automatic overhang detection.
     const double threshold_rad = (object_config.support_material_threshold.value > 0)
@@ -1355,7 +1356,13 @@ static inline std::tuple<Polygons, Polygons, Polygons, Polygons, float> detect_o
             // Extrusion width accounts for the roundings of the extrudates.
             // It is the maximum widh of the extrudate.
             float fw = float(layerm->flow(frExternalPerimeter).scaled_width());
-            lower_layer_offset = (layer_id < (size_t) object_config.support_material_enforce_layers.value)
+            // enforce_layers only applies when supports are actually being generated
+            // (auto or painted); without either, it should not create standalone support.
+            const bool has_enforcers = std::any_of(annotations.enforcers_layers.begin(),
+                                                   annotations.enforcers_layers.end(),
+                                                   [](const Polygons &p) { return !p.empty(); });
+            lower_layer_offset = ((support_auto || has_enforcers) &&
+                                  layer_id < (size_t) object_config.support_material_enforce_layers.value)
                                      ?
                                      // Enforce a full possible support, ignore the overhang angle.
                                      0.f

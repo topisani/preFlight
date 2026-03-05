@@ -99,9 +99,11 @@ CollapsibleSection::~CollapsibleSection()
 #ifdef __APPLE__
     // preFlight: On macOS, wxWidgetCocoaImpl::~wxWidgetCocoaImpl() can throw an
     // Objective-C exception when the native NSView hierarchy is partially torn down
-    // during app shutdown.  Destroy children inside an @try/@catch wrapper so the
-    // exception doesn't propagate out of this noexcept destructor and crash.
+    // during app shutdown.  Safely destroy children first, then detach our own
+    // native NSView from its superview so the base class destructor won't throw
+    // when it tries to tear down an already-inconsistent Cocoa view hierarchy.
     Slic3r::GUI::mac_safe_destroy_children(this);
+    Slic3r::GUI::mac_safe_detach_native_view(this);
 #endif
 }
 

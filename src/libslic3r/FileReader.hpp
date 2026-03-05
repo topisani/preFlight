@@ -40,6 +40,7 @@ struct LoadStats
     bool looks_like_imperial_units{false};
     bool looks_like_multipart_object{false};
     std::string step_import_warning;
+    std::string generator_application; // Application metadata from 3mf (e.g. "OrcaSlicer-2.3.1")
 };
 
 bool is_project_file(const std::string &input_file);

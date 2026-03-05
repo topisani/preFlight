@@ -59,6 +59,9 @@ void reorder_extrusion_paths(std::vector<ExtrusionPath> &extrusion_paths, std::v
 void chain_and_reorder_extrusion_paths(std::vector<ExtrusionPath> &extrusion_paths, const Point *start_near = nullptr);
 
 Polylines chain_polylines(Polylines &&src, const Point *start_near = nullptr);
+// Like chain_polylines but also returns the original index for each output polyline.
+std::pair<Polylines, std::vector<size_t>> chain_polylines_with_indices(Polylines &&src,
+                                                                       const Point *start_near = nullptr);
 inline Polylines chain_polylines(const Polylines &src, const Point *start_near = nullptr)
 {
     Polylines tmp(src);

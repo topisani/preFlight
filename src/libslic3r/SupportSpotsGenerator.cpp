@@ -866,7 +866,7 @@ std::vector<const ExtrusionEntityCollection *> gather_extrusions(const LayerSlic
 bool has_brim(const Layer *layer, const Params &params)
 {
     return int(layer->id()) == params.raft_layers_count && params.raft_layers_count == 0 &&
-           params.brim_type != BrimType::btNoBrim && params.brim_width > 0.0;
+           (params.brim_type == BrimType::btPainted || params.brim_width > 0.0);
 }
 
 Polygons get_brim(const ExPolygon &slice_polygon, const BrimType brim_type, const float brim_width)

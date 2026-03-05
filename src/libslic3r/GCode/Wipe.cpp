@@ -134,8 +134,9 @@ std::string Wipe::wipe(GCodeGenerator &gcodegen, bool toolchange)
 
                 // Emit wipe
                 gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Wipe_Start) + "\n";
-                gcode += gcodegen.writer().set_speed(wipe_speed * 60, {},
-                                                     gcodegen.enable_cooling_markers() ? ";_WIPE"sv : ""sv);
+                inject_feedrate(gcode,
+                                gcodegen.writer().set_speed(wipe_speed * 60, {},
+                                                            gcodegen.enable_cooling_markers() ? ";_WIPE"sv : ""sv));
 
                 if (use_firmware_retraction)
                 {
@@ -170,8 +171,9 @@ std::string Wipe::wipe(GCodeGenerator &gcodegen, bool toolchange)
             {
                 wiped = true;
                 gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Wipe_Start) + "\n";
-                gcode += gcodegen.writer().set_speed(wipe_speed * 60, {},
-                                                     gcodegen.enable_cooling_markers() ? ";_WIPE"sv : ""sv);
+                inject_feedrate(gcode,
+                                gcodegen.writer().set_speed(wipe_speed * 60, {},
+                                                            gcodegen.enable_cooling_markers() ? ";_WIPE"sv : ""sv));
             }
         };
 

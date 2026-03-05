@@ -44,6 +44,11 @@ extern void mac_set_view_corner_radius(void *nsview_handle, double radius);
 // occur during Cocoa NSView teardown at app shutdown.  Call from destructors
 // of wxWindow subclasses that crash in wxWidgetCocoaImpl::~wxWidgetCocoaImpl().
 extern void mac_safe_destroy_children(wxWindow *window);
+// Pre-emptively detach a window's native NSView from its superview so that
+// wxWidgetCocoaImpl::~wxWidgetCocoaImpl() doesn't throw when the Cocoa view
+// hierarchy is already partially torn down.  Call after mac_safe_destroy_children
+// in destructors of widgets that crash during app shutdown.
+extern void mac_safe_detach_native_view(wxWindow *window);
 #endif
 
 } // namespace GUI

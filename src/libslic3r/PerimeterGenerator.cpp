@@ -541,12 +541,25 @@ static ClipperZUtils::ZPaths clip_extrusion(const ClipperZUtils::ZPath &subject,
                 // Interpolate extrusion line width.
                 assert(start.z > 0 && end.z > 0);
 
-                double length_sqr = double((end.x - start.x) * (end.x - start.x) +
-                                           (end.y - start.y) * (end.y - start.y));
-                double dist_sqr = double((pt.x - start.x) * (pt.x - start.x) + (pt.y - start.y) * (pt.y - start.y));
-                double t = std::sqrt(dist_sqr / length_sqr);
-
-                pt.z = start.z + int64_t((end.z - start.z) * t);
+                // Cast to double BEFORE squaring to prevent int64 overflow.
+                // Clipper2 coordinates can span ~4 billion units (nanometers) across a build plate;
+                // squaring that difference (~16 * 10^18) overflows int64 (max 9.2 * 10^18),
+                // producing NaN in sqrt, which casts to INT64_MIN and corrupts the width.
+                double dx = double(end.x - start.x);
+                double dy = double(end.y - start.y);
+                double length_sqr = dx * dx + dy * dy;
+                if (length_sqr < 1.0)
+                {
+                    pt.z = start.z;
+                }
+                else
+                {
+                    double dpx = double(pt.x - start.x);
+                    double dpy = double(pt.y - start.y);
+                    double dist_sqr = dpx * dpx + dpy * dpy;
+                    double t = std::sqrt(dist_sqr / length_sqr);
+                    pt.z = start.z + int64_t((end.z - start.z) * t);
+                }
             }
         });
 
@@ -603,8 +616,16 @@ static ClipperZUtils::ZPaths clip_extrusion(const ClipperZUtils::ZPath &subject,
                 const Point pt_a(it_min->x, it_min->y);
                 const Point pt_b(std::next(it_min)->x, std::next(it_min)->y);
                 const double line_len = (pt_b - pt_a).cast<double>().norm();
-                const double dist = (projected_pt_min - pt_a).cast<double>().norm();
-                c_pt.z = coord_t(double(it_min->z) + (dist / line_len) * double(std::next(it_min)->z - it_min->z));
+                // Degenerate edge guard: same div-by-zero -> NaN -> INT64_MIN issue as the Z callback above.
+                if (line_len < SCALED_EPSILON)
+                {
+                    c_pt.z = it_min->z;
+                }
+                else
+                {
+                    const double dist = (projected_pt_min - pt_a).cast<double>().norm();
+                    c_pt.z = coord_t(double(it_min->z) + (dist / line_len) * double(std::next(it_min)->z - it_min->z));
+                }
             }
 
     assert(
@@ -2718,10 +2739,31 @@ void PerimeterGenerator::process_athena(
         break;
     }
 
+    // preFlight: Convert thin wall precision enum to nanometer snap grid value
+    coord_t tw_snap = 10000; // default 0.01mm
+    switch (params.config.thin_wall_precision.value)
+    {
+    case twp001:
+        tw_snap = 1000;
+        break;
+    case twp005:
+        tw_snap = 5000;
+        break;
+    case twp01:
+        tw_snap = 10000;
+        break;
+    case twp05:
+        tw_snap = 50000;
+        break;
+    case twp1:
+        tw_snap = 100000;
+        break;
+    }
+
     Athena::WallToolPaths wall_tool_paths(last_p, ext_perimeter_spacing, perimeter_spacing, coord_t(loop_number + 1), 0,
                                           params.layer_height, params.object_config, params.print_config,
                                           ext_perimeter_width, perimeter_width, ext_perimeter_spacing2,
-                                          perimeter_spacing, 0, params.layer_id, min_bead_width_factor);
+                                          perimeter_spacing, 0, params.layer_id, min_bead_width_factor, tw_snap);
     Athena::Perimeters perimeters = wall_tool_paths.getToolPaths();
     // Arachne treats widths as "suggestions" and recalculates them. We enforce exact user values.
     // This fixes the core issue where extrusion widths vary from user settings (e.g., 0.5mm -> 0.499mm)
@@ -2779,7 +2821,7 @@ void PerimeterGenerator::process_athena(
                                                         coord_t(inner_loop_number + 1), 0, params.layer_height,
                                                         params.object_config, params.print_config, perimeter_width,
                                                         perimeter_width, 0, perimeter_spacing, 0, params.layer_id,
-                                                        min_bead_width_factor);
+                                                        min_bead_width_factor, tw_snap);
             Athena::Perimeters inner_perimeters = inner_wall_tool_paths.getToolPaths();
             preFlight::PreciseWalls::enforce_exact_widths(inner_perimeters, ext_perimeter_width, perimeter_width);
 
@@ -2808,7 +2850,7 @@ void PerimeterGenerator::process_athena(
                                                                  params.object_config, params.print_config,
                                                                  ext_perimeter_width, perimeter_width,
                                                                  ext_perimeter_spacing2, perimeter_spacing, 0,
-                                                                 params.layer_id, min_bead_width_factor);
+                                                                 params.layer_id, min_bead_width_factor, tw_snap);
             perimeters = no_single_perimeter_tool_paths.getToolPaths();
             preFlight::PreciseWalls::enforce_exact_widths(perimeters, ext_perimeter_width, perimeter_width);
             infill_contour = union_ex(no_single_perimeter_tool_paths.getInnerContour());

@@ -702,7 +702,7 @@ static inline void tree_supports_generate_paths(ExtrusionEntitiesPtr &dst, const
                 co.ArcTolerance(miterLimit);
             else
                 co.MiterLimit(miterLimit);
-            // Note: ShortestEdgeLength removed in Clipper2 (handled internally)
+            // Note: ShortestEdgeLength removed in Clipper2
             co.AddPath(Slic3rPoints_to_ClipperPath(expoly.contour.points), joinType, EndType::Polygon);
             Clipper2Lib::Paths64 contours_raw;
             co.Execute(-delta, contours_raw);
@@ -729,7 +729,7 @@ static inline void tree_supports_generate_paths(ExtrusionEntitiesPtr &dst, const
                         co.ArcTolerance(miterLimit);
                     else
                         co.MiterLimit(miterLimit);
-                    // Note: ShortestEdgeLength removed in Clipper2 (handled internally)
+                    // Note: ShortestEdgeLength removed in Clipper2
                     co.AddPath(Slic3rPoints_to_ClipperPath(hole.points), joinType, EndType::Polygon);
                     Clipper2Lib::Paths64 out2;
                     // Execute reorients the contours so that the outer most contour has a positive area. Thus the output

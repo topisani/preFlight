@@ -181,8 +181,8 @@ public:
         : wxFrame(nullptr, wxID_ANY, wxEmptyString, CalculateCenteredPosition(bitmap, pos),
                   wxSize(bitmap.GetWidth(), bitmap.GetHeight()),
                   wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxSTAY_ON_TOP
-#ifdef __WXMSW__
-                      | wxFRAME_SHAPED // Windows uses UpdateLayeredWindow; Linux uses RGBA visual (SHAPED conflicts)
+#if defined(__WXMSW__) || (defined(__linux__) && defined(__aarch64__))
+                      | wxFRAME_SHAPED // RPi/VNC needs shaped window; desktop Linux RGBA visual conflicts with SHAPED
 #endif
           )
     {
@@ -253,19 +253,38 @@ public:
         SetBackgroundStyle(wxBG_STYLE_PAINT);
 
 #ifdef __WXGTK3__
-        // Enable RGBA visual for true window transparency (requires compositor)
-        GtkWidget *widget = static_cast<GtkWidget *>(GetHandle());
-        GdkScreen *screen = gtk_widget_get_screen(widget);
-        GdkVisual *visual = gdk_screen_get_rgba_visual(screen);
-        m_has_alpha = (visual != nullptr);
-        if (m_has_alpha)
+        // Enable RGBA visual for true window transparency.
+        // Only works when a compositor is active; without one the RGBA visual
+        // exists but transparency renders as black.
         {
-            gtk_widget_set_visual(widget, visual);
-            gtk_widget_set_app_paintable(widget, TRUE);
+            GtkWidget *widget = static_cast<GtkWidget *>(GetHandle());
+            GdkScreen *screen = gtk_widget_get_screen(widget);
+            if (gdk_screen_is_composited(screen))
+            {
+                GdkVisual *visual = gdk_screen_get_rgba_visual(screen);
+                m_has_alpha = (visual != nullptr);
+                if (m_has_alpha)
+                {
+                    gtk_widget_set_visual(widget, visual);
+                    gtk_widget_set_app_paintable(widget, TRUE);
+                }
+            }
+        }
+        // No compositor: use a shaped window so transparent areas are cut out
+        if (!m_has_alpha && m_bitmap.IsOk())
+        {
+            wxImage shape_img = m_bitmap.ConvertToImage();
+            if (shape_img.HasAlpha())
+            {
+                // Low threshold: only fully transparent pixels are removed from shape
+                shape_img.ConvertAlphaToMask(1);
+                SetShape(wxRegion(wxBitmap(shape_img)));
+            }
         }
 #elif defined(__WXOSX__)
         // preFlight: Make the window non-opaque so Quartz composites alpha correctly
         Slic3r::GUI::mac_set_window_transparent(GetHandle());
+        m_has_alpha = true;
 #endif
 
         Bind(wxEVT_PAINT,
@@ -273,10 +292,11 @@ public:
              {
                  wxAutoBufferedPaintDC dc(this);
 #if defined(__WXGTK3__) || defined(__WXOSX__)
-                 // Clear to fully transparent, then composite the bitmap over it.
-                 // GTK3 requires an RGBA visual (set above); macOS Quartz supports
-                 // alpha compositing natively once the window is non-opaque.
+                 if (m_has_alpha)
                  {
+                     // Clear to fully transparent, then composite the bitmap over it.
+                     // GTK3 requires an RGBA visual (set above); macOS Quartz supports
+                     // alpha compositing natively once the window is non-opaque.
                      auto gc = wxGraphicsContext::Create(dc);
                      if (gc)
                      {
@@ -289,15 +309,16 @@ public:
                          delete gc;
                      }
                  }
-#else
+                 else
+#endif
                  {
-                     // Fallback: dark background
+                     // Shaped window fallback or non-GTK3 path:
+                     // Just paint the bitmap; shaped window handles transparency
                      dc.SetBackground(wxBrush(wxColour(34, 34, 34)));
                      dc.Clear();
                      if (m_bitmap.IsOk())
                          dc.DrawBitmap(m_bitmap, 0, 0, true);
                  }
-#endif
              });
 #endif
 
@@ -1695,9 +1716,11 @@ bool GUI_App::on_init_inner()
 
         // create splash screen with updated bmp
         // wxSPLASH_CENTRE_ON_SCREEN would override our multi-monitor positioning
-        // The splash manages its own lifetime via internal timer - no external timer needed.
+        // Pass 0 for timeout to disable the internal auto-close timer.
+        // The external timer (below, after mainframe->Show) manages the splash lifetime
+        // via wxWeakRef. Having two independent timers caused a use-after-free race.
         scrn = new SplashScreen(bmp.IsOk() ? bmp : get_bmp_bundle("preFlight", 400)->GetBitmap(wxSize(400, 400)),
-                                wxSPLASH_TIMEOUT, 5000, splashscreen_pos);
+                                wxSPLASH_TIMEOUT, 0, splashscreen_pos);
 
         if (!default_splashscreen_pos)
             // revert "restore_win_position" value if application wasn't crashed

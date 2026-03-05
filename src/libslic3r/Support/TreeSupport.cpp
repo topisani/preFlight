@@ -242,6 +242,11 @@ static std::vector<std::pair<TreeSupportSettings, std::vector<size_t>>> group_me
     // ORGANIC_ENFORCER (green) is for Organic generator
     print_object.project_and_append_custom_facets(false, TriangleStateType::ORGANIC_ENFORCER, enforcers_layers);
     print_object.project_and_append_custom_facets(false, TriangleStateType::BLOCKER, blockers_layers);
+    // enforce_layers only applies when supports are actually being generated
+    // (auto or painted); without either, it should not create standalone support.
+    const bool has_enforcers = std::any_of(enforcers_layers.begin(), enforcers_layers.end(),
+                                           [](const Polygons &p) { return !p.empty(); });
+    const int effective_enforce_layers = (support_auto || has_enforcers) ? support_enforce_layers : 0;
     const int support_threshold = config.support_material_threshold.value;
     const bool support_threshold_auto = support_threshold == 0;
     // +1 makes the threshold inclusive
@@ -250,12 +255,12 @@ static std::vector<std::pair<TreeSupportSettings, std::vector<size_t>>> group_me
     auto enforcer_overhang_offset = scaled<double>(config.support_tree_tip_diameter.value);
 
     size_t num_overhang_layers = support_auto ? num_object_layers
-                                              : std::min(num_object_layers, std::max(size_t(support_enforce_layers),
+                                              : std::min(num_object_layers, std::max(size_t(effective_enforce_layers),
                                                                                      enforcers_layers.size()));
     tbb::parallel_for(
         tbb::blocked_range<LayerIndex>(1, num_overhang_layers),
         [&print_object, &config, &print_config, &enforcers_layers, &blockers_layers, support_auto,
-         support_enforce_layers, support_threshold_auto, tan_threshold, enforcer_overhang_offset, num_raft_layers,
+         effective_enforce_layers, support_threshold_auto, tan_threshold, enforcer_overhang_offset, num_raft_layers,
          &throw_on_cancel, &out](const tbb::blocked_range<LayerIndex> &range)
         {
             for (LayerIndex layer_id = range.begin(); layer_id < range.end(); ++layer_id)
@@ -268,7 +273,7 @@ static std::vector<std::pair<TreeSupportSettings, std::vector<size_t>>> group_me
                 // Final overhangs.
                 Polygons overhangs;
                 // For how many layers full overhangs shall be supported.
-                const bool enforced_layer = layer_id < support_enforce_layers;
+                const bool enforced_layer = layer_id < effective_enforce_layers;
                 if (support_auto || enforced_layer)
                 {
                     float lower_layer_offset;

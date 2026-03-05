@@ -68,6 +68,7 @@ public:
     static std::string transform_gcode_label_objects(const std::string &value);
     static std::string transform_fuzzy_skin(const std::string &value);
     static std::string transform_ensure_vertical_shell(const std::string &value);
+    static std::string transform_arc_fitting(const std::string &value);
 
 private:
     OrcaKeyMapper();

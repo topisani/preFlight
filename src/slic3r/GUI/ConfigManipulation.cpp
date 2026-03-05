@@ -613,28 +613,11 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig *config, con
         // Organic supports are always synchronized with object layers as of now.
         config->opt_enum<SupportMaterialStyle>("support_material_style") != smsOrganic)
     {
-        if (config->opt_enum<SupportTopContactGap>("support_material_contact_distance") == stcgNoGap)
-        {
-            if (!config->opt_bool("support_material_synchronize_layers"))
-            {
-                wxString msg_text = _(L("For the Wipe Tower to work with the soluble supports, the support layers\n"
-                                        "need to be synchronized with the object layers."));
-                if (is_global_config)
-                    msg_text += "\n\n" + _(L("Shall I synchronize support layers in order to enable the Wipe Tower?"));
-                MessageDialog dialog(m_msg_dlg_parent, msg_text, _(L("Wipe Tower")),
-                                     wxICON_WARNING | (is_global_config ? wxYES | wxNO : wxOK));
-                DynamicPrintConfig new_conf = *config;
-                auto answer = dialog.ShowModal();
-                if (!is_global_config || answer == wxID_YES)
-                {
-                    new_conf.set_key_value("support_material_synchronize_layers", new ConfigOptionBool(true));
-                }
-                else
-                    new_conf.set_key_value("wipe_tower", new ConfigOptionBool(false));
-                apply(config, &new_conf);
-            }
-        }
-        else
+        // preFlight: Removed soluble-support synchronize_layers dialog.
+        // preFlight always syncs sparse support layers to object layer heights;
+        // only interface layers near top contacts use independent heights,
+        // which the wipe tower handles fine via ToolOrdering.
+        if (config->opt_enum<SupportTopContactGap>("support_material_contact_distance") != stcgNoGap)
         {
             if ((config->opt_int("support_material_extruder") != 0 ||
                  config->opt_int("support_material_interface_extruder") != 0))
@@ -746,13 +729,14 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config)
 {
     bool have_perimeters = config->opt_int("perimeters") > 0;
     for (auto el : {"extra_perimeters", "extra_perimeters_on_overhangs", "thin_walls", "overhangs", "seam_position",
-                    "staggered_inner_seams", "seam_notch", "seam_notch_width", "seam_notch_angle",
+                    "staggered_inner_seams", "seam_type", "seam_notch_width", "seam_notch_angle",
                     "external_perimeters_first", "external_perimeter_extrusion_width", "perimeter_speed",
                     "small_perimeter_speed", "external_perimeter_speed", "enable_dynamic_overhang_speeds"})
         toggle_field(el, have_perimeters);
 
-    toggle_field("seam_notch_width", have_perimeters && config->opt_bool("seam_notch"));
-    toggle_field("seam_notch_angle", have_perimeters && config->opt_bool("seam_notch"));
+    bool seam_notch_active = have_perimeters && config->opt_enum<SeamNotchType>("seam_type") != sntRegular;
+    toggle_field("seam_notch_width", seam_notch_active);
+    toggle_field("seam_notch_angle", seam_notch_active);
 
     for (size_t i = 0; i < 4; i++)
     {
@@ -846,7 +830,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config)
     for (auto el : {"skirt_distance", "draft_shield", "min_skirt_length"})
         toggle_field(el, have_skirt);
 
-    bool have_brim = config->opt_enum<BrimType>("brim_type") != btNoBrim;
+    bool have_brim = true; // All brim types show brim settings (btPainted uses them as defaults)
     for (auto el : {"brim_width", "brim_separation", "brim_ears_max_angle", "brim_ears_detection_length"})
         toggle_field(el, have_brim);
     // perimeter_extruder uses the same logic as in Print::extruders()
@@ -945,6 +929,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config)
     // toggle_field("thin_walls", !have_advanced_perimeters);
 
     toggle_field("perimeter_compression", have_athena);
+    toggle_field("thin_wall_precision", have_athena);
 
     toggle_field("scarf_seam_placement", !has_spiral_vase);
     const auto scarf_seam_placement{config->opt_enum<ScarfSeamPlacement>("scarf_seam_placement")};

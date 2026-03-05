@@ -65,11 +65,9 @@ ObjectSettings::ObjectSettings(wxWindow *parent) : OG_Settings(parent, true)
     m_og->activate();
     m_og->set_name(_(L("Additional Settings")));
 
-    // Create scrollable panel for settings list with max height
-    // This ensures scrollbar appears when settings list grows too long
-    // Note: ObjectList and Info panel are hidden when settings are shown, so we have more room
+    // Create scrollable panel for settings list - expands to fill available space
+    // when ObjectList and Info panels are hidden in object settings mode
     m_scroll_panel = new ScrollablePanel(m_og->ctrl_parent(), wxID_ANY, wxDefaultPosition, wxDefaultSize);
-    m_scroll_panel->SetMaxSize(wxSize(-1, wxGetApp().em_unit() * 50)); // ~500px at 100% DPI
     m_scroll_panel->sys_color_changed();
 
     m_settings_list_sizer = new wxBoxSizer(wxVERTICAL);

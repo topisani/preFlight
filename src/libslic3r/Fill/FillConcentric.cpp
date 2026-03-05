@@ -33,14 +33,16 @@
 namespace Slic3r
 {
 
-// Builds a containment tree and traverses depth-first to complete each region's inner loops
-// before moving to the next region. Works with both Athena::ExtrusionLine and Arachne::ExtrusionLine.
+// Builds a containment tree and traverses depth-first, clustering spatially
+// adjacent siblings to complete each region before moving on.
+// Works with both Athena::ExtrusionLine and Arachne::ExtrusionLine.
+// line_spacing is used to determine the cluster gap threshold (3x spacing).
 namespace
 {
 
 template<typename ExtrusionLineT, typename VariableWidthLinesT, typename ToThickPolylineFn>
 void process_concentric_loops_by_region(std::vector<VariableWidthLinesT> &loops, ThickPolylines &thick_polylines_out,
-                                        Point &last_pos, bool prefer_clockwise_movements,
+                                        Point &last_pos, bool prefer_clockwise_movements, coord_t line_spacing,
                                         ToThickPolylineFn to_thick_polyline_fn)
 {
     // Structure to hold extrusion with metadata for containment tree
@@ -191,6 +193,42 @@ void process_concentric_loops_by_region(std::vector<VariableWidthLinesT> &loops,
                 thick_polyline.points.push_back(thick_polyline.points.front());
             }
 
+            // Rotate closed loop to start at the vertex nearest to last_pos.
+            // Without this, all loops start at Arachne's default 3 o'clock point,
+            // so last_pos is always on the right side of every loop. This gives the
+            // ordering algorithm a completely distorted view of nozzle proximity,
+            // causing it to drift rightward and strand left-side regions.
+            if (thick_polyline.points.size() >= 4)
+            {
+                size_t n = thick_polyline.points.size() - 1; // unique points (exclude closing duplicate)
+                size_t nearest = 0;
+                double nearest_dist = std::numeric_limits<double>::max();
+                for (size_t i = 0; i < n; ++i)
+                {
+                    double d = (thick_polyline.points[i] - last_pos).cast<double>().squaredNorm();
+                    if (d < nearest_dist)
+                    {
+                        nearest_dist = d;
+                        nearest = i;
+                    }
+                }
+
+                if (nearest > 0)
+                {
+                    std::rotate(thick_polyline.points.begin(),
+                                thick_polyline.points.begin() + static_cast<ptrdiff_t>(nearest),
+                                thick_polyline.points.begin() + static_cast<ptrdiff_t>(n));
+                    thick_polyline.points.back() = thick_polyline.points.front();
+
+                    if (thick_polyline.width.size() >= n * 2)
+                    {
+                        std::rotate(thick_polyline.width.begin(),
+                                    thick_polyline.width.begin() + static_cast<ptrdiff_t>(nearest * 2),
+                                    thick_polyline.width.begin() + static_cast<ptrdiff_t>(n * 2));
+                    }
+                }
+            }
+
             // Remove collinear points (eliminates 3 o'clock artifacts)
             TravelOptimization::remove_collinear_points(thick_polyline, 1.0);
         }
@@ -198,182 +236,197 @@ void process_concentric_loops_by_region(std::vector<VariableWidthLinesT> &loops,
         last_pos = thick_polylines_out.back().last_point();
     };
 
-    // Get children of a node sorted by nearest neighbor to last_pos
-    auto get_sorted_children = [&](size_t idx) -> std::vector<size_t>
+    // Track which nodes have been processed
+    std::vector<bool> processed(nodes.size(), false);
+
+    // --- Cluster-based depth-first traversal ---
+    // The key insight: when concentric rings split around holes, sibling loops (same parent)
+    // scatter across separate spatial regions. Treating them as a flat pool causes the nozzle
+    // to drift between regions. Instead, we cluster spatially adjacent siblings and process
+    // each cluster completely before moving to the next.
+    //
+    // Cluster gap = 3x line spacing (~1.2mm). This groups loops within the same gap region
+    // while keeping loops across holes (5mm+ apart) in separate clusters.
+
+    double cluster_gap_sq = double(line_spacing) * double(line_spacing) * 9.0;
+
+    // Cluster sibling indices by spatial adjacency using flood-fill.
+    // Two siblings are adjacent if any vertex-to-vertex distance < cluster_gap.
+    auto cluster_siblings = [&](const std::vector<size_t> &siblings) -> std::vector<std::vector<size_t>>
     {
-        std::vector<size_t> result;
-        std::vector<size_t> &children = nodes[idx].children;
-        std::vector<bool> child_used(children.size(), false);
-        for (size_t n = 0; n < children.size(); ++n)
+        if (siblings.empty())
+            return {};
+        if (siblings.size() == 1)
+            return {siblings};
+
+        coord_t expand = coord_t(double(line_spacing) * 3.0) + 1;
+        std::vector<std::vector<size_t>> clusters;
+        std::vector<bool> assigned(siblings.size(), false);
+
+        for (size_t s = 0; s < siblings.size(); ++s)
         {
-            double best_dist = std::numeric_limits<double>::max();
-            size_t best_idx = 0;
-            for (size_t c = 0; c < children.size(); ++c)
+            if (assigned[s])
+                continue;
+
+            std::vector<size_t> cluster;
+            std::vector<size_t> flood_queue;
+            assigned[s] = true;
+            cluster.push_back(siblings[s]);
+            flood_queue.push_back(s);
+
+            while (!flood_queue.empty())
             {
-                if (child_used[c])
-                    continue;
-                Point child_start = nodes[children[c]].polygon.points.empty()
-                                        ? Point(0, 0)
-                                        : nodes[children[c]].polygon.points.front();
-                double dist = (child_start - last_pos).cast<double>().squaredNorm();
-                if (dist < best_dist)
+                size_t cur_local = flood_queue.back();
+                flood_queue.pop_back();
+                size_t cur_node = siblings[cur_local];
+
+                // Expand current node's bbox for quick rejection
+                BoundingBox expanded_bbox = node_bboxes[cur_node];
+                expanded_bbox.offset(expand);
+
+                for (size_t o = 0; o < siblings.size(); ++o)
                 {
-                    best_dist = dist;
+                    if (assigned[o])
+                        continue;
+                    size_t other_node = siblings[o];
+
+                    // Quick bbox rejection
+                    const BoundingBox &other_bbox = node_bboxes[other_node];
+                    if (expanded_bbox.max.x() < other_bbox.min.x() || expanded_bbox.min.x() > other_bbox.max.x() ||
+                        expanded_bbox.max.y() < other_bbox.min.y() || expanded_bbox.min.y() > other_bbox.max.y())
+                        continue;
+
+                    // Check min vertex-to-vertex distance
+                    bool adjacent = false;
+                    for (const Point &pa : nodes[cur_node].polygon.points)
+                    {
+                        for (const Point &pb : nodes[other_node].polygon.points)
+                        {
+                            if ((pa - pb).cast<double>().squaredNorm() <= cluster_gap_sq)
+                            {
+                                adjacent = true;
+                                break;
+                            }
+                        }
+                        if (adjacent)
+                            break;
+                    }
+
+                    if (adjacent)
+                    {
+                        assigned[o] = true;
+                        cluster.push_back(other_node);
+                        flood_queue.push_back(o);
+                    }
+                }
+            }
+
+            clusters.push_back(std::move(cluster));
+        }
+
+        return clusters;
+    };
+
+    // Nearest-vertex distance from last_pos to the closest unprocessed node in a cluster
+    auto cluster_min_dist = [&](const std::vector<size_t> &cluster) -> double
+    {
+        double best = std::numeric_limits<double>::max();
+        for (size_t idx : cluster)
+        {
+            if (processed[idx])
+                continue;
+            for (const Point &pt : nodes[idx].polygon.points)
+            {
+                double d = (pt - last_pos).cast<double>().squaredNorm();
+                if (d < best)
+                    best = d;
+            }
+        }
+        return best;
+    };
+
+    // Recursive cluster traversal. Two mutually-recursive functions:
+    // - process_peer_clusters: given a set of peer clusters, repeatedly picks the nearest
+    //   cluster (re-evaluating proximity each time!) and processes it completely.
+    // - process_single_cluster: processes all loops in one cluster by nearest-neighbor,
+    //   recursing into children's clusters before continuing with remaining siblings.
+    //
+    // The re-evaluation after each cluster completes is critical: after finishing one
+    // region, the nozzle position has changed, so the "nearest" peer cluster may differ
+    // from what it was at push time.
+
+    std::function<void(std::vector<size_t> &)> process_single_cluster;
+    std::function<void(std::vector<std::vector<size_t>> &)> process_peer_clusters;
+
+    process_single_cluster = [&](std::vector<size_t> &cluster)
+    {
+        while (true)
+        {
+            // Find nearest unprocessed loop in this cluster
+            double best_dist = std::numeric_limits<double>::max();
+            size_t best_node = SIZE_MAX;
+            for (size_t idx : cluster)
+            {
+                if (processed[idx])
+                    continue;
+                for (const Point &pt : nodes[idx].polygon.points)
+                {
+                    double d = (pt - last_pos).cast<double>().squaredNorm();
+                    if (d < best_dist)
+                    {
+                        best_dist = d;
+                        best_node = idx;
+                    }
+                }
+            }
+
+            if (best_node == SIZE_MAX)
+                return; // Cluster exhausted
+
+            processed[best_node] = true;
+            process_node(best_node);
+
+            // Recurse into children's clusters before continuing with remaining siblings
+            if (!nodes[best_node].children.empty())
+            {
+                auto child_clusters = cluster_siblings(nodes[best_node].children);
+                process_peer_clusters(child_clusters);
+            }
+        }
+    };
+
+    process_peer_clusters = [&](std::vector<std::vector<size_t>> &clusters)
+    {
+        while (true)
+        {
+            // Re-evaluate: find the nearest cluster based on CURRENT nozzle position
+            double best_dist = std::numeric_limits<double>::max();
+            size_t best_idx = SIZE_MAX;
+            for (size_t c = 0; c < clusters.size(); ++c)
+            {
+                double d = cluster_min_dist(clusters[c]);
+                if (d < best_dist)
+                {
+                    best_dist = d;
                     best_idx = c;
                 }
             }
-            child_used[best_idx] = true;
-            result.push_back(children[best_idx]);
+
+            if (best_idx == SIZE_MAX)
+                return; // All clusters done
+
+            // Process this cluster completely (including recursive children)
+            process_single_cluster(clusters[best_idx]);
         }
-        return result;
     };
 
-    // Track which nodes have been processed to avoid infinite loops from cycles
-    std::vector<bool> processed(nodes.size(), false);
-
-    // Iterative depth-first traversal using explicit stack
-    struct StackFrame
-    {
-        size_t node_idx;
-        std::vector<size_t> sorted_children;
-        size_t next_child;
-    };
-
-    // Process roots by nearest neighbor
-    std::vector<bool> root_used(roots.size(), false);
-    for (size_t n = 0; n < roots.size(); ++n)
-    {
-        double best_dist = std::numeric_limits<double>::max();
-        size_t best_idx = 0;
-        for (size_t r = 0; r < roots.size(); ++r)
-        {
-            if (root_used[r])
-                continue;
-            Point root_start = nodes[roots[r]].polygon.points.empty() ? Point(0, 0)
-                                                                      : nodes[roots[r]].polygon.points.front();
-            double dist = (root_start - last_pos).cast<double>().squaredNorm();
-            if (dist < best_dist)
-            {
-                best_dist = dist;
-                best_idx = r;
-            }
-        }
-        root_used[best_idx] = true;
-        size_t root_node = roots[best_idx];
-
-        // Skip if already processed (can happen with cycle fixes)
-        if (processed[root_node])
-            continue;
-
-        // Iterative traversal from this root
-        std::vector<StackFrame> traverse_stack;
-        traverse_stack.push_back({root_node, {}, 0});
-
-        while (!traverse_stack.empty())
-        {
-            StackFrame &frame = traverse_stack.back();
-
-            // First visit to this frame?
-            if (frame.sorted_children.empty() && frame.next_child == 0)
-            {
-                // Skip if already processed (cycle)
-                if (processed[frame.node_idx])
-                {
-                    traverse_stack.pop_back();
-                    continue;
-                }
-                // Process this node
-                processed[frame.node_idx] = true;
-                process_node(frame.node_idx);
-                frame.sorted_children = get_sorted_children(frame.node_idx);
-            }
-
-            // Find next unprocessed child
-            while (frame.next_child < frame.sorted_children.size() &&
-                   processed[frame.sorted_children[frame.next_child]])
-            {
-                frame.next_child++;
-            }
-
-            if (frame.next_child < frame.sorted_children.size())
-            {
-                // Push next child onto stack
-                size_t child = frame.sorted_children[frame.next_child++];
-                traverse_stack.push_back({child, {}, 0});
-            }
-            else
-            {
-                // Done with this node
-                traverse_stack.pop_back();
-            }
-        }
-    }
-
-    // These are nodes that were stuck in containment cycles and couldn't be
-    // reached from proper roots. Process them after the main tree in nearest-neighbor order.
-    std::vector<bool> cycle_used(cycle_nodes.size(), false);
-    for (size_t n = 0; n < cycle_nodes.size(); ++n)
-    {
-        double best_dist = std::numeric_limits<double>::max();
-        size_t best_idx = 0;
-        for (size_t c = 0; c < cycle_nodes.size(); ++c)
-        {
-            if (cycle_used[c] || processed[cycle_nodes[c]])
-                continue;
-            Point start = nodes[cycle_nodes[c]].polygon.points.empty() ? Point(0, 0)
-                                                                       : nodes[cycle_nodes[c]].polygon.points.front();
-            double dist = (start - last_pos).cast<double>().squaredNorm();
-            if (dist < best_dist)
-            {
-                best_dist = dist;
-                best_idx = c;
-            }
-        }
-        if (best_dist == std::numeric_limits<double>::max())
-            break; // All done
-        cycle_used[best_idx] = true;
-        size_t cycle_node = cycle_nodes[best_idx];
-
-        if (processed[cycle_node])
-            continue;
-
-        // Traverse from this cycle node
-        std::vector<StackFrame> traverse_stack;
-        traverse_stack.push_back({cycle_node, {}, 0});
-
-        while (!traverse_stack.empty())
-        {
-            StackFrame &frame = traverse_stack.back();
-
-            if (frame.sorted_children.empty() && frame.next_child == 0)
-            {
-                if (processed[frame.node_idx])
-                {
-                    traverse_stack.pop_back();
-                    continue;
-                }
-                processed[frame.node_idx] = true;
-                process_node(frame.node_idx);
-                frame.sorted_children = get_sorted_children(frame.node_idx);
-            }
-
-            while (frame.next_child < frame.sorted_children.size() &&
-                   processed[frame.sorted_children[frame.next_child]])
-            {
-                frame.next_child++;
-            }
-
-            if (frame.next_child < frame.sorted_children.size())
-            {
-                size_t child = frame.sorted_children[frame.next_child++];
-                traverse_stack.push_back({child, {}, 0});
-            }
-            else
-            {
-                traverse_stack.pop_back();
-            }
-        }
-    }
+    // Start: cluster roots + cycle nodes and process
+    std::vector<size_t> all_initial;
+    all_initial.reserve(roots.size() + cycle_nodes.size());
+    all_initial.insert(all_initial.end(), roots.begin(), roots.end());
+    all_initial.insert(all_initial.end(), cycle_nodes.begin(), cycle_nodes.end());
+    auto initial_clusters = cluster_siblings(all_initial);
+    process_peer_clusters(initial_clusters);
 }
 
 } // anonymous namespace
@@ -448,7 +501,14 @@ void FillConcentric::_fill_surface_single(const FillParams &params, unsigned int
     // Trade-off: Slightly less smooth infill paths, but MASSIVELY faster and actually works.
     // With certain geometry configurations, offset may never shrink to exactly empty.
     // Add safety limit to prevent infinite loops while still allowing complex geometry to process.
-    constexpr size_t MAX_ITERATIONS = 10000;
+    // preFlight: Compute a physically-derived loop limit from the geometry. The maximum number
+    // of concentric rings that can fit = largest_dimension / spacing. Clipper2 fragmentation can
+    // cause the offset loop to produce far more polygons than rings (slivers at each iteration),
+    // which chokes downstream processing. Cap total accumulated loops at 2x the physical maximum
+    // to allow headroom for geometry with holes while preventing pathological accumulation.
+    size_t max_physical_rings = std::max(size_t(2), size_t(max_dimension / distance));
+    size_t max_loops = max_physical_rings * 2 + loops.size(); // 2x headroom + initial contour
+    size_t max_iterations = max_physical_rings * 2;           // same 2x headroom for iterations
     size_t iteration = 0;
     // If geometry doesn't shrink for several consecutive iterations, break out early.
     // This prevents accumulating thousands of identical loops when Clipper2 gets stuck.
@@ -457,7 +517,7 @@ void FillConcentric::_fill_surface_single(const FillParams &params, unsigned int
     constexpr size_t MAX_STUCK_ITERATIONS = 5;
     size_t stuck_iterations = 0;
     double last_total_area = std::numeric_limits<double>::max();
-    while (!last.empty() && iteration < MAX_ITERATIONS)
+    while (!last.empty() && iteration < max_iterations && loops.size() < max_loops)
     {
         ++iteration;
 
@@ -503,20 +563,71 @@ void FillConcentric::_fill_surface_single(const FillParams &params, unsigned int
         append(loops, to_polygons(last));
     }
 
-    // generate paths from the outermost to the innermost, to avoid
-    // adhesion problems of the first central tiny loops
-    loops = union_pt_chained_outside_in(loops);
+    // Generate paths from the outermost to the innermost, to avoid
+    // adhesion problems of the first central tiny loops.
+    // preFlight: Do NOT use union_pt_chained_outside_in here. It feeds all accumulated loops
+    // into a single Clipper2 Union operation which is O(N^2) on intersections and hangs when
+    // the loop count is high (thousands of loops from iterative offset fragmentation).
+    // Concentric loops are nested and non-overlapping by construction - they don't need a
+    // Union to resolve overlaps. Sort by descending area (outside-in) instead: O(N log N).
+    std::sort(loops.begin(), loops.end(),
+              [](const Polygon &a, const Polygon &b) { return std::abs(a.area()) > std::abs(b.area()); });
 
-    // split paths using a nearest neighbor search
+    // Nearest-neighbor loop ordering with smallest-first bias: among nearby unprocessed
+    // loops, pick the smallest (by area) first. Small regions finish quickly without
+    // pulling the nozzle far away. Uses closest-vertex distance for proximity.
     size_t iPathFirst = polylines_out.size();
     Point last_pos = params.start_near ? *params.start_near : Point(0, 0);
 
-    for (const Polygon &loop : loops)
+    // Precompute loop areas for the smallest-first heuristic
+    std::vector<double> loop_areas(loops.size());
+    for (size_t i = 0; i < loops.size(); ++i)
+        loop_areas[i] = std::abs(loops[i].area());
+
+    // Proximity radius: 25x ring spacing (~10mm for 0.4mm spacing). Large enough to
+    // catch small nearby regions, small enough to not reach distant hole regions.
+    double proximity_radius = double(distance) * 25.0;
+
+    std::vector<bool> loop_used(loops.size(), false);
+    for (size_t n = 0; n < loops.size(); ++n)
     {
-        // Use nearest_vertex_index_closed to ensure we split at an actual vertex,
-        // not a point that might be mid-edge (which would create an artificial segment)
-        size_t nearest_idx = TravelOptimization::nearest_vertex_index_closed(loop.points, last_pos);
-        polylines_out.emplace_back(loop.split_at_index(nearest_idx));
+        // Pass 1: find nearest vertex distance across all unused loops
+        double nearest_dist_sq = std::numeric_limits<double>::max();
+        for (size_t i = 0; i < loops.size(); ++i)
+        {
+            if (loop_used[i])
+                continue;
+            size_t nv = TravelOptimization::nearest_vertex_index_closed(loops[i].points, last_pos);
+            double dist = (loops[i].points[nv] - last_pos).cast<double>().squaredNorm();
+            if (dist < nearest_dist_sq)
+                nearest_dist_sq = dist;
+        }
+
+        double threshold = std::sqrt(nearest_dist_sq) + proximity_radius;
+        double threshold_sq = threshold * threshold;
+
+        // Pass 2: among loops within proximity threshold, pick smallest area
+        double smallest_area = std::numeric_limits<double>::max();
+        double best_dist = std::numeric_limits<double>::max();
+        size_t best_idx = 0;
+        for (size_t i = 0; i < loops.size(); ++i)
+        {
+            if (loop_used[i])
+                continue;
+            size_t nv = TravelOptimization::nearest_vertex_index_closed(loops[i].points, last_pos);
+            double dist = (loops[i].points[nv] - last_pos).cast<double>().squaredNorm();
+            if (dist > threshold_sq)
+                continue;
+            if (loop_areas[i] < smallest_area || (loop_areas[i] == smallest_area && dist < best_dist))
+            {
+                smallest_area = loop_areas[i];
+                best_dist = dist;
+                best_idx = i;
+            }
+        }
+        loop_used[best_idx] = true;
+        size_t split_idx = TravelOptimization::nearest_vertex_index_closed(loops[best_idx].points, last_pos);
+        polylines_out.emplace_back(loops[best_idx].split_at_index(split_idx));
         last_pos = polylines_out.back().last_point();
     }
 
@@ -566,22 +677,16 @@ void FillConcentric::_fill_surface_single(const FillParams &params, unsigned int
 
         if (params.perimeter_generator == PerimeterGeneratorType::Athena)
         {
-            // Athena requires separate width and spacing parameters for precise control
-            coord_t extrusion_width = min_spacing;
-
-            // No overlap for concentric infill (matches Arachne behavior)
-            // TODO: Make overlap percentage configurable via settings if needed
-            coord_t spacing = extrusion_width; // 0% overlap
-
-            // Use extended constructor with separate width and spacing parameters
-            Athena::WallToolPaths wallToolPaths(polygons, extrusion_width, extrusion_width, loops_count, 0,
-                                                params.layer_height, *this->print_object_config, *this->print_config,
-                                                extrusion_width, extrusion_width, spacing, spacing);
+            // Use min_spacing for both width and spacing, matching Arachne's behavior.
+            // min_spacing already has the standard overlap baked in via Flow spacing.
+            Athena::WallToolPaths wallToolPaths(polygons, min_spacing, min_spacing, loops_count, 0, params.layer_height,
+                                                *this->print_object_config, *this->print_config, min_spacing,
+                                                min_spacing, min_spacing, min_spacing);
 
             std::vector<Athena::VariableWidthLines> loops = wallToolPaths.getToolPaths();
 
             process_concentric_loops_by_region<Athena::ExtrusionLine>(loops, thick_polylines_out, last_pos,
-                                                                      params.prefer_clockwise_movements,
+                                                                      params.prefer_clockwise_movements, min_spacing,
                                                                       [](const Athena::ExtrusionLine &e)
                                                                       { return Athena::to_thick_polyline(e); });
         }
@@ -592,7 +697,7 @@ void FillConcentric::_fill_surface_single(const FillParams &params, unsigned int
             std::vector<Arachne::VariableWidthLines> loops = wallToolPaths.getToolPaths();
 
             process_concentric_loops_by_region<Arachne::ExtrusionLine>(loops, thick_polylines_out, last_pos,
-                                                                       params.prefer_clockwise_movements,
+                                                                       params.prefer_clockwise_movements, min_spacing,
                                                                        [](const Arachne::ExtrusionLine &e)
                                                                        { return Arachne::to_thick_polyline(e); });
         }

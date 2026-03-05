@@ -751,6 +751,9 @@ public:
     // preFlight: Release the GL context so the GPU driver can drop to idle power state.
     // The context is re-acquired automatically by _set_current() before the next render.
     void release_gl_context();
+    // preFlight: Public wrapper to ensure the GL context is current. Needed by code
+    // that runs GL operations outside the render cycle (e.g. gcode data loading).
+    bool ensure_gl_current() { return _set_current(); }
     void requires_check_outside_state() { m_requires_check_outside_state = true; }
 
     unsigned int get_volumes_count() const { return (unsigned int) m_volumes.volumes.size(); }
@@ -1043,6 +1046,11 @@ public:
     void export_toolpaths_to_obj(const char *filename) const { m_gcode_viewer.export_toolpaths_to_obj(filename); }
 
     void mouse_up_cleanup();
+
+    // preFlight: Returns true when GPU power-saving optimizations should be active.
+    // Only enabled on the Preview tab where GPU usage matters; the Platter uses
+    // minimal GPU and needs full responsiveness for gizmos, hover, slicing progress, etc.
+    bool is_gpu_power_saving() const;
 
     bool are_labels_shown() const { return m_labels.is_shown(); }
     void show_labels(bool show) { m_labels.show(show); }

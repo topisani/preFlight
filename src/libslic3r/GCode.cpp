@@ -336,22 +336,6 @@ GCodeGenerator::ObjectsLayerToPrint GCodeGenerator::collect_layers_to_print(cons
     GCodeGenerator::ObjectsLayerToPrint layers_to_print;
     layers_to_print.reserve(object.layers().size() + object.support_layers().size());
 
-    /*
-    // Calculate a minimum support layer height as a minimum over all extruders, but not smaller than 10um.
-    // This is the same logic as in support generator.
-    //FIXME should we use the printing extruders instead?
-    double gap_over_supports = object.config().support_material_contact_distance;
-    // FIXME should we test object.config().support_material_synchronize_layers ? Currently the support layers are synchronized with object layers iff soluble supports.
-    assert(!object.has_support() || gap_over_supports != 0. || object.config().support_material_synchronize_layers);
-    if (gap_over_supports != 0.) {
-        gap_over_supports = std::max(0., gap_over_supports);
-        // Not a soluble support,
-        double support_layer_height_min = 1000000.;
-        for (auto lh : object.print()->config().min_layer_height.values)
-            support_layer_height_min = std::min(support_layer_height_min, std::max(0.01, lh));
-        gap_over_supports += support_layer_height_min;
-    }*/
-
     std::vector<std::pair<double, double>> warning_ranges;
 
     // Pair the object layers with the support layers by z.
@@ -2281,65 +2265,53 @@ static bool custom_gcode_sets_temperature(const std::string &gcode, const int mc
     return temp_set_by_gcode;
 }
 
-// Print the machine envelope G-code for the Marlin firmware based on the "machine_max_xxx" parameters.
+// Print the machine envelope G-code for Marlin firmware based on the "machine_max_xxx" parameters.
 // Do not process this piece of G-code by the time estimator, it already knows the values through another sources.
 void GCodeGenerator::print_machine_envelope(GCodeOutputStream &file, const Print &print)
 {
     const GCodeFlavor flavor = print.config().gcode_flavor.value;
-    if ((flavor == gcfMarlinLegacy || flavor == gcfMarlinFirmware || flavor == gcfRepRapFirmware ||
-         flavor == gcfRapid) &&
+
+    // RRF/Rapid manage machine limits via config.g - never emit them to G-code.
+    // Klipper similarly manages limits in printer.cfg.
+    // Only Marlin firmwares use inline machine envelope commands.
+    if (flavor == gcfRepRapFirmware || flavor == gcfRapid || flavor == gcfKlipper)
+        return;
+
+    if ((flavor == gcfMarlinLegacy || flavor == gcfMarlinFirmware) &&
         print.config().machine_limits_usage.value == MachineLimitsUsage::EmitToGCode)
     {
-        int factor = (flavor == gcfRepRapFirmware || flavor == gcfRapid) ? 60 : 1; // RRF M203 and M566 are in mm/min
         file.write_format("M201 X%d Y%d Z%d E%d ; sets maximum accelerations, mm/sec^2\n",
                           int(print.config().machine_max_acceleration_x.values.front() + 0.5),
                           int(print.config().machine_max_acceleration_y.values.front() + 0.5),
                           int(print.config().machine_max_acceleration_z.values.front() + 0.5),
                           int(print.config().machine_max_acceleration_e.values.front() + 0.5));
-        file.write_format("M203 X%d Y%d Z%d E%d ; sets maximum feedrates, %s\n",
-                          int(print.config().machine_max_feedrate_x.values.front() * factor + 0.5),
-                          int(print.config().machine_max_feedrate_y.values.front() * factor + 0.5),
-                          int(print.config().machine_max_feedrate_z.values.front() * factor + 0.5),
-                          int(print.config().machine_max_feedrate_e.values.front() * factor + 0.5),
-                          factor == 60 ? "mm / min" : "mm / sec");
+        file.write_format("M203 X%d Y%d Z%d E%d ; sets maximum feedrates, mm/sec\n",
+                          int(print.config().machine_max_feedrate_x.values.front() + 0.5),
+                          int(print.config().machine_max_feedrate_y.values.front() + 0.5),
+                          int(print.config().machine_max_feedrate_z.values.front() + 0.5),
+                          int(print.config().machine_max_feedrate_e.values.front() + 0.5));
 
-        // Now M204 - acceleration. This one is quite hairy...
-        if (flavor == gcfRepRapFirmware || flavor == gcfRapid)
-            // Uses M204 P[print] T[travel]
-            file.write_format("M204 P%d T%d ; sets acceleration (P, T), mm/sec^2\n",
-                              int(print.config().machine_max_acceleration_extruding.values.front() + 0.5),
-                              int(print.config().machine_max_acceleration_travel.values.front() + 0.5));
-        else if (flavor == gcfMarlinLegacy)
+        if (flavor == gcfMarlinLegacy)
             // Legacy Marlin uses M204 S[print] T[retract]
-            file.write_format("M204 S%d T%d ; sets acceleration (S) and retract acceleration (R), mm/sec^2\n",
+            file.write_format("M204 S%d T%d ; sets acceleration (S) and retract acceleration (T), mm/sec^2\n",
                               int(print.config().machine_max_acceleration_extruding.values.front() + 0.5),
                               int(print.config().machine_max_acceleration_retracting.values.front() + 0.5));
-        else if (flavor == gcfMarlinFirmware)
+        else
             // New Marlin uses M204 P[print] R[retract] T[travel]
             file.write_format("M204 P%d R%d T%d ; sets acceleration (P, T) and retract acceleration (R), mm/sec^2\n",
                               int(print.config().machine_max_acceleration_extruding.values.front() + 0.5),
                               int(print.config().machine_max_acceleration_retracting.values.front() + 0.5),
                               int(print.config().machine_max_acceleration_travel.values.front() + 0.5));
-        else
-            assert(false);
 
         assert(is_decimal_separator_point());
-        file.write_format((flavor == gcfRepRapFirmware || flavor == gcfRapid)
-                              ? "M566 X%.2lf Y%.2lf Z%.2lf E%.2lf ; sets the jerk limits, mm/min\n"
-                              : "M205 X%.2lf Y%.2lf Z%.2lf E%.2lf ; sets the jerk limits, mm/sec\n",
-                          print.config().machine_max_jerk_x.values.front() * factor,
-                          print.config().machine_max_jerk_y.values.front() * factor,
-                          print.config().machine_max_jerk_z.values.front() * factor,
-                          print.config().machine_max_jerk_e.values.front() * factor);
-        if (flavor != gcfRepRapFirmware && flavor != gcfRapid)
-            file.write_format("M205 S%d T%d ; sets the minimum extruding and travel feed rate, mm/sec\n",
-                              int(print.config().machine_min_extruding_rate.values.front() + 0.5),
-                              int(print.config().machine_min_travel_rate.values.front() + 0.5));
-        else
-        {
-            // M205 Sn Tn not supported in RRF. They use M203 Inn to set minimum feedrate for
-            // all moves. This is currently not implemented.
-        }
+        file.write_format("M205 X%.2lf Y%.2lf Z%.2lf E%.2lf ; sets the jerk limits, mm/sec\n",
+                          print.config().machine_max_jerk_x.values.front(),
+                          print.config().machine_max_jerk_y.values.front(),
+                          print.config().machine_max_jerk_z.values.front(),
+                          print.config().machine_max_jerk_e.values.front());
+        file.write_format("M205 S%d T%d ; sets the minimum extruding and travel feed rate, mm/sec\n",
+                          int(print.config().machine_min_extruding_rate.values.front() + 0.5),
+                          int(print.config().machine_min_travel_rate.values.front() + 0.5));
     }
 }
 
@@ -3142,6 +3114,10 @@ LayerResult GCodeGenerator::process_layer(
     gcode += this->change_layer(previous_layer_z, print_z, result.spiral_vase_enable, first_point.head<2>(),
                                 first_layer); // this will increase m_layer_index
     m_layer = &layer;
+
+    // Reset manual fan speed tracking so the first feature of each layer always emits a marker.
+    // CoolingBuffer processes layers independently and needs a marker to set the correct fan speed.
+    m_current_manual_fan_speed.reset();
     if (this->line_distancer_is_required(layer_tools.extruders) && this->m_layer != nullptr &&
         this->m_layer->lower_layer != nullptr)
         m_travel_obstacle_tracker.init_layer(layer, layers);
@@ -3996,7 +3972,7 @@ static Vec2d compute_seam_inward_direction(const GCode::SmoothPath &smooth_path,
 // depth_scaled: maximum inward offset in scaled coordinates
 // inward: unit vector pointing toward part interior
 static void apply_notch_to_external(GCode::SmoothPath &smooth_path, double half_width_scaled, double depth_scaled,
-                                    const Vec2d &inward)
+                                    const Vec2d &inward, SeamNotchType notch_type)
 {
     if (smooth_path.empty() || inward.squaredNorm() < 1e-10)
         return;
@@ -4004,6 +3980,8 @@ static void apply_notch_to_external(GCode::SmoothPath &smooth_path, double half_
     const double max_seg_len = half_width_scaled * 0.15; // ~15% of half width for smooth taper
 
     // --- Taper from path START (seam start) ---
+    // Tuck mode skips the start taper (only the end cuts inward)
+    if (notch_type != sntTuck)
     {
         auto &first_path = smooth_path.front().path;
 
@@ -4060,6 +4038,8 @@ static void apply_notch_to_external(GCode::SmoothPath &smooth_path, double half_
     }
 
     // --- Taper from path END (seam end) ---
+    // Nip mode skips the end taper (only the start cuts inward)
+    if (notch_type != sntNip)
     {
         auto &last_path = smooth_path.back().path;
         if (last_path.size() < 2)
@@ -4120,25 +4100,83 @@ static void apply_notch_to_external(GCode::SmoothPath &smooth_path, double half_
     }
 }
 
-// Trim the first inner perimeter at the notch location by clipping its path from
-// both ends. The inner perimeter's seam is already near the outer perimeter's seam,
-// so clipping from start and end creates a gap that matches the outer notch width.
-// This "cuts" the inner perimeter to absorb the notch disturbance, preventing it
-// from propagating to remaining perimeters.
-static void apply_notch_to_inner(GCode::SmoothPath &smooth_path, double half_width_scaled)
+// Extend the end of a smooth path by adding a point past the last point
+// in the direction of the last segment.
+static void extend_path_end(GCode::SmoothPath &smooth_path, double extension_scaled)
+{
+    if (smooth_path.empty() || extension_scaled <= 0)
+        return;
+    auto &last_path = smooth_path.back().path;
+    if (last_path.size() < 2)
+        return;
+    Vec2d dir = (last_path.back().point - last_path[last_path.size() - 2].point).cast<double>();
+    if (dir.squaredNorm() < 1e-10)
+        return;
+    dir.normalize();
+    Geometry::ArcWelder::Segment s = last_path.back();
+    s.point += (dir * extension_scaled).cast<coord_t>();
+    s.radius = 0;
+    last_path.push_back(s);
+}
+
+// Extend the start of a smooth path by adding a point before the first point
+// in the reverse direction of the first segment.
+static void extend_path_start(GCode::SmoothPath &smooth_path, double extension_scaled)
+{
+    if (smooth_path.empty() || extension_scaled <= 0)
+        return;
+    auto &first_path = smooth_path.front().path;
+    if (first_path.size() < 2)
+        return;
+    Vec2d dir = (first_path[0].point - first_path[1].point).cast<double>();
+    if (dir.squaredNorm() < 1e-10)
+        return;
+    dir.normalize();
+    Geometry::ArcWelder::Segment s = first_path[0];
+    s.point += (dir * extension_scaled).cast<coord_t>();
+    s.radius = 0;
+    first_path.insert(first_path.begin(), s);
+}
+
+// Adjust a smooth path endpoint: positive = clip, negative = extend.
+static void adjust_path_end(GCode::SmoothPath &smooth_path, double adjustment_scaled)
+{
+    if (adjustment_scaled > 0)
+    {
+        const double min_threshold = scaled<double>(GCode::ExtrusionOrder::min_gcode_segment_length);
+        clip_end(smooth_path, adjustment_scaled, min_threshold);
+    }
+    else if (adjustment_scaled < 0)
+    {
+        extend_path_end(smooth_path, -adjustment_scaled);
+    }
+}
+
+// Adjust a smooth path start point: positive = clip, negative = extend.
+static void adjust_path_start(GCode::SmoothPath &smooth_path, double adjustment_scaled)
+{
+    if (adjustment_scaled > 0)
+    {
+        const double min_threshold = scaled<double>(GCode::ExtrusionOrder::min_gcode_segment_length);
+        GCode::reverse(smooth_path);
+        clip_end(smooth_path, adjustment_scaled, min_threshold);
+        GCode::reverse(smooth_path);
+    }
+    else if (adjustment_scaled < 0)
+    {
+        extend_path_start(smooth_path, -adjustment_scaled);
+    }
+}
+
+// Trim or extend the first inner perimeter at the notch location.
+// Positive values clip, negative values extend the path.
+static void apply_notch_to_inner(GCode::SmoothPath &smooth_path, double start_adjust_scaled, double end_adjust_scaled)
 {
     if (smooth_path.empty())
         return;
 
-    const double min_threshold = scaled<double>(GCode::ExtrusionOrder::min_gcode_segment_length);
-
-    // Clip from the end of the path (near seam end)
-    clip_end(smooth_path, half_width_scaled, min_threshold);
-
-    // Clip from the start of the path (near seam start) by reversing, clipping, reversing back
-    GCode::reverse(smooth_path);
-    clip_end(smooth_path, half_width_scaled, min_threshold);
-    GCode::reverse(smooth_path);
+    adjust_path_end(smooth_path, end_adjust_scaled);
+    adjust_path_start(smooth_path, start_adjust_scaled);
 }
 
 // Apply seam notch to a single (external, inner) perimeter pair.
@@ -4214,7 +4252,20 @@ static void apply_seam_notch_pair(GCode::ExtrusionOrder::Perimeter &ext_perim,
         return;
 
     // Apply V-notch to external perimeter
-    apply_notch_to_external(ext_perim.smooth_path, half_width_scaled, depth_scaled, inward);
+    const SeamNotchType notch_type = config.seam_type.value;
+    apply_notch_to_external(ext_perim.smooth_path, half_width_scaled, depth_scaled, inward, notch_type);
+
+    // For asymmetric modes, adjust the external perimeter's non-notched endpoint.
+    // At narrow notch widths, clip to prevent bead overlap. At wider widths, extend
+    // toward the notch to close the gap. Scales linearly with notch width.
+    if (notch_type == sntNip || notch_type == sntTuck)
+    {
+        const double ext_adjust = scale_(ext_width * (1.0 - 0.5 * config.seam_notch_width.value));
+        if (notch_type == sntNip)
+            adjust_path_end(ext_perim.smooth_path, ext_adjust);
+        else
+            adjust_path_start(ext_perim.smooth_path, ext_adjust);
+    }
 
     // Trim the first inner perimeter where the V-leg crosses it.
     // Find the intersection of the V-leg centerline with the inner perimeter centerline
@@ -4252,12 +4303,24 @@ static void apply_seam_notch_pair(GCode::ExtrusionOrder::Perimeter &ext_perim,
 
         // Back off by inner_width/2 so the bead edge sits at the intersection.
         // Scale trim with notch width: wider V = larger valley = bigger gap needed.
-        // Linear ramp: at 1x trim ≈ inner_width/2, growing with the width setting.
+        // Linear ramp: at 1x trim ~ inner_width/2, growing with the width setting.
         const double base_trim = x_int + inner_width / 2.0;
-        const double inner_half_trim_mm = std::max(0.0, base_trim * (0.65 + 0.35 * config.seam_notch_width.value));
-        const double inner_half_trim_scaled = scale_(inner_half_trim_mm);
+        const double notch_trim_mm = std::max(0.0, base_trim * (0.65 + 0.35 * config.seam_notch_width.value));
+        const double notch_trim_scaled = scale_(notch_trim_mm);
 
-        apply_notch_to_inner(inner_perim->smooth_path, inner_half_trim_scaled);
+        // For asymmetric modes, clip the non-notched side by half the inner bead width
+        // so the bead edge sits at the seam point, preventing overlap.
+        const double inner_non_notch_clip = scale_(inner_width / 2.0);
+
+        // Notched side: full trim (identical to Nip/Tuck). Non-notched side: half-bead clip.
+        double start_adjust = notch_trim_scaled;
+        double end_adjust = notch_trim_scaled;
+        if (notch_type == sntNip)
+            end_adjust = inner_non_notch_clip; // End is non-notched side
+        else if (notch_type == sntTuck)
+            start_adjust = inner_non_notch_clip; // Start is non-notched side
+
+        apply_notch_to_inner(inner_perim->smooth_path, start_adjust, end_adjust);
     }
 }
 
@@ -4321,7 +4384,9 @@ static void apply_seam_notch(std::vector<GCode::ExtrusionOrder::Perimeter> &peri
             }
         }
 
-        apply_seam_notch_pair(*ext, best_inner, config);
+        // Skip notch on single-perimeter regions (e.g. top_one_perimeter, only_one_perimeter_first_layer)
+        if (best_inner != nullptr)
+            apply_seam_notch_pair(*ext, best_inner, config);
     }
 }
 
@@ -4334,8 +4399,9 @@ std::string GCodeGenerator::extrude_perimeters(const PrintRegion &region,
         m_config.apply(region.config());
     }
 
-    // preFlight: Apply seam notch if enabled and we have multiple perimeters
-    if (m_config.seam_notch.value && m_config.perimeters.value > 1 && !perimeters.empty())
+    // preFlight: Apply seam notch if a non-Regular seam type is selected, we have multiple perimeters, and not in spiral vase mode
+    if (m_config.seam_type.value != sntRegular && m_config.perimeters.value > 1 && !m_config.spiral_vase &&
+        !perimeters.empty())
     {
         apply_seam_notch(perimeters, m_config);
     }
@@ -5224,6 +5290,26 @@ std::string GCodeGenerator::_extrude(const ExtrusionAttributes &path_attr, const
 
     double F = speed * 60; // convert mm/sec to mm/min
 
+    // preFlight: Pre-scan to check if any segment will produce actual movement.
+    // If the entire path is zero-length (all quantized endpoints identical), skip emitting
+    // metadata (WIDTH, HEIGHT) and feedrate to avoid orphaned comments and redundant F lines.
+    bool path_has_movement = false;
+    {
+        Vec2d prev_q = GCodeFormatter::quantize(this->point_to_gcode(path.front().point));
+        for (auto check_it = std::next(path.begin()); check_it != path.end(); ++check_it)
+        {
+            Vec2d p_q = GCodeFormatter::quantize(this->point_to_gcode(check_it->point));
+            if (p_q != prev_q)
+            {
+                path_has_movement = true;
+                break;
+            }
+            prev_q = p_q;
+        }
+    }
+    if (!path_has_movement)
+        return gcode;
+
     // extrude arc or line
     if (m_enable_extrusion_role_markers)
     {
@@ -5308,7 +5394,7 @@ std::string GCodeGenerator::_extrude(const ExtrusionAttributes &path_attr, const
     // If the first emitted segment is over a bridge zone, use over_bridge_speed from the start
     if (over_bridge_speed_value > 0 && segment_over_bridge.size() > 1 && segment_over_bridge[1])
         F = std::round(over_bridge_speed_value * 60.0);
-    gcode += m_writer.set_speed(F, "", cooling_marker_setspeed_comments);
+    inject_feedrate(gcode, m_writer.set_speed(F, "", cooling_marker_setspeed_comments));
 
     if (dynamic_print_and_fan_speeds.fan_speed >= 0 && !EXTRUDER_CONFIG(enable_manual_fan_speeds))
     {
@@ -5489,7 +5575,7 @@ std::string GCodeGenerator::_extrude(const ExtrusionAttributes &path_attr, const
                         // Only emit speed change if it's different from current speed
                         if (std::abs(F - segment_F) > 0.1)
                         {
-                            gcode += m_writer.set_speed(segment_F, "", "");
+                            inject_feedrate(gcode, m_writer.set_speed(segment_F, "", ""));
                             F = segment_F; // Update current F for comparison
                         }
                     }
@@ -5584,7 +5670,7 @@ std::string GCodeGenerator::_extrude(const ExtrusionAttributes &path_attr, const
                             double subseg_F = std::round(subseg_speed * 60.0);
                             if (std::abs(F - subseg_F) > 0.1)
                             {
-                                gcode += m_writer.set_speed(subseg_F, "", "");
+                                inject_feedrate(gcode, m_writer.set_speed(subseg_F, "", ""));
                                 F = subseg_F;
                             }
 
@@ -5622,7 +5708,7 @@ std::string GCodeGenerator::_extrude(const ExtrusionAttributes &path_attr, const
                             double bridge_F = std::round(over_bridge_speed_value * 60.0);
                             if (std::abs(F - bridge_F) > 0.1)
                             {
-                                gcode += m_writer.set_speed(bridge_F, "", "");
+                                inject_feedrate(gcode, m_writer.set_speed(bridge_F, "", ""));
                                 F = bridge_F;
                             }
                         }
@@ -5633,7 +5719,7 @@ std::string GCodeGenerator::_extrude(const ExtrusionAttributes &path_attr, const
                             double original_F = std::round(speed * 60.0);
                             if (std::abs(F - original_F) > 0.1)
                             {
-                                gcode += m_writer.set_speed(original_F, "", "");
+                                inject_feedrate(gcode, m_writer.set_speed(original_F, "", ""));
                                 F = original_F;
                             }
                         }

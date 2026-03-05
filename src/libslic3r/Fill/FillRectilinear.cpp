@@ -3912,14 +3912,22 @@ bool FillRectilinear::fill_surface_by_lines(const Surface *surface, const FillPa
     }
 
     // preFlight: Clip generated polylines against the fill boundary to prevent lines from
-    // escaping through polygon holes. This handles complex multi-hole geometries where
-    // the monotonic region generation creates regions spanning vlines without contour links.
+    // escaping through polygon holes. Each polyline is clipped individually to preserve the
+    // monotonic ordering (batch intersection_pl uses Clipper2 which scrambles input order).
     if (polylines_out.size() > n_polylines_out_initial && !poly_with_offset.expolygons_outer.empty())
     {
-        Polylines new_polylines(polylines_out.begin() + n_polylines_out_initial, polylines_out.end());
-        Polylines clipped = intersection_pl(new_polylines, poly_with_offset.expolygons_outer);
+        Polylines clipped_ordered;
+        clipped_ordered.reserve(polylines_out.size() - n_polylines_out_initial);
+        for (size_t i = n_polylines_out_initial; i < polylines_out.size(); ++i)
+        {
+            Polylines single = {std::move(polylines_out[i])};
+            Polylines result = intersection_pl(single, poly_with_offset.expolygons_outer);
+            for (Polyline &pl : result)
+                clipped_ordered.emplace_back(std::move(pl));
+        }
         polylines_out.erase(polylines_out.begin() + n_polylines_out_initial, polylines_out.end());
-        polylines_out.insert(polylines_out.end(), clipped.begin(), clipped.end());
+        polylines_out.insert(polylines_out.end(), std::make_move_iterator(clipped_ordered.begin()),
+                             std::make_move_iterator(clipped_ordered.end()));
     }
 
 #ifdef SLIC3R_DEBUG

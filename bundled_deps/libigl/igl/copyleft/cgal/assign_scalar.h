@@ -10,7 +10,9 @@
 #include "../../igl_inline.h"
 #include <CGAL/Exact_predicates_exact_constructions_kernel.h>
 #include <CGAL/Exact_predicates_exact_constructions_kernel_with_sqrt.h>
-#ifndef WIN32
+// preFlight: added CGAL_DISABLE_GMP guard. libigl bypasses CGAL's own GMP detection.
+// Re-apply this if updating the bundled libigl.
+#if !defined(WIN32) && !defined(CGAL_DISABLE_GMP)
 #include <CGAL/gmpxx.h>
 #endif
 
@@ -53,7 +55,7 @@ namespace igl
         const CGAL::Exact_predicates_exact_constructions_kernel_with_sqrt::FT & cgal,
         float& d);
 
-#ifndef WIN32
+#if !defined(WIN32) && !defined(CGAL_DISABLE_GMP)
       IGL_INLINE void assign_scalar(
         const CGAL::Simple_cartesian<mpq_class>::FT & cgal,
         CGAL::Simple_cartesian<mpq_class>::FT & d);
@@ -63,7 +65,7 @@ namespace igl
       IGL_INLINE void assign_scalar(
         const CGAL::Simple_cartesian<mpq_class>::FT & cgal,
         float& d);
-#endif // WIN32
+#endif
 
     }
   }

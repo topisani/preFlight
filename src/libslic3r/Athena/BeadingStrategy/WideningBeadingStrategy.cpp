@@ -16,11 +16,12 @@ namespace Slic3r::Athena
 {
 
 WideningBeadingStrategy::WideningBeadingStrategy(BeadingStrategyPtr parent, const coord_t min_input_width,
-                                                 const coord_t min_output_width)
+                                                 const coord_t min_output_width, const coord_t thin_wall_snap_precision)
     : BeadingStrategy(*parent)
     , parent(std::move(parent))
     , min_input_width(min_input_width)
     , min_output_width(min_output_width)
+    , thin_wall_snap_precision(thin_wall_snap_precision)
 {
 }
 
@@ -53,12 +54,12 @@ WideningBeadingStrategy::Beading WideningBeadingStrategy::compute(coord_t thickn
             coord_t actual_thickness = thickness + overlap_offset;
             coord_t output_width = actual_thickness; // Use actual detected width
 
-            // Snap to nearest 0.01mm if within 5μm to correct floating-point precision errors
-            // from the skeletal trapezoidation geometry processing.
-            // Examples: 0.210356mm → 0.21mm, 0.199987mm → 0.20mm
-            constexpr coord_t snap_precision = 10000; // 0.01mm in nanometers
-            constexpr coord_t snap_threshold = 5000;  // 5 microns
-            coord_t rounded_width = ((output_width + snap_precision / 2) / snap_precision) * snap_precision;
+            // Snap to the configured precision grid to correct floating-point noise
+            // from skeletal trapezoidation. The precision is user-configurable via
+            // "Thin wall width precision" (default 0.01mm = 10000 nanometers).
+            coord_t snap_threshold = thin_wall_snap_precision / 2;
+            coord_t rounded_width = ((output_width + thin_wall_snap_precision / 2) / thin_wall_snap_precision) *
+                                    thin_wall_snap_precision;
             if (std::abs(output_width - rounded_width) <= snap_threshold)
             {
                 output_width = rounded_width;

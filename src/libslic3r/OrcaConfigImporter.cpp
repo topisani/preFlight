@@ -327,6 +327,96 @@ int OrcaConfigImporter::parse_and_map_profile(const std::string &json_content, P
         {
             map_bed_temperatures(j, out_config, false, profile_name, result);
             map_bed_temperatures(j, out_config, true, profile_name, result);
+
+            // Handle shrinkage compensation: Orca uses 100% = no shrinkage, preFlight uses 0% = no compensation.
+            // filament_shrink (Orca XY) maps to both filament_shrinkage_compensation_x and _y.
+            // filament_shrinkage_compensation_z also needs the same value conversion.
+            auto convert_shrinkage = [](const nlohmann::json &val) -> std::string
+            {
+                std::string csv;
+                auto convert_one = [](const std::string &s) -> std::string
+                {
+                    // Strip trailing '%' if present, parse the number, convert: pf = 100 - orca
+                    std::string num_str = s;
+                    if (!num_str.empty() && num_str.back() == '%')
+                        num_str.pop_back();
+                    try
+                    {
+                        double orca_val = std::stod(num_str);
+                        double pf_val = 100.0 - orca_val;
+                        // Format with enough precision, trim trailing zeros
+                        char buf[64];
+                        snprintf(buf, sizeof(buf), "%.4g", pf_val);
+                        return std::string(buf);
+                    }
+                    catch (...)
+                    {
+                        return "0"; // Fallback: no compensation
+                    }
+                };
+
+                if (val.is_array())
+                {
+                    for (size_t i = 0; i < val.size(); ++i)
+                    {
+                        if (i > 0)
+                            csv += ",";
+                        if (val[i].is_string())
+                            csv += convert_one(val[i].get<std::string>());
+                        else if (val[i].is_number())
+                            csv += convert_one(std::to_string(val[i].get<double>()));
+                        else
+                            csv += "0";
+                    }
+                }
+                else if (val.is_string())
+                {
+                    csv = convert_one(val.get<std::string>());
+                }
+                else if (val.is_number())
+                {
+                    csv = convert_one(std::to_string(val.get<double>()));
+                }
+                return csv;
+            };
+
+            if (j.contains("filament_shrink"))
+            {
+                std::string pf_val = convert_shrinkage(j["filament_shrink"]);
+                if (!pf_val.empty())
+                {
+                    try
+                    {
+                        out_config.set_deserialize_strict("filament_shrinkage_compensation_x", pf_val);
+                        out_config.set_deserialize_strict("filament_shrinkage_compensation_y", pf_val);
+                        mapped_count += 2;
+                    }
+                    catch (const std::exception &e)
+                    {
+                        BOOST_LOG_TRIVIAL(warning) << "OrcaImporter: Failed to convert filament_shrink in "
+                                                   << profile_name << ": " << e.what();
+                    }
+                }
+            }
+
+            if (j.contains("filament_shrinkage_compensation_z"))
+            {
+                std::string pf_val = convert_shrinkage(j["filament_shrinkage_compensation_z"]);
+                if (!pf_val.empty())
+                {
+                    try
+                    {
+                        out_config.set_deserialize_strict("filament_shrinkage_compensation_z", pf_val);
+                        ++mapped_count;
+                    }
+                    catch (const std::exception &e)
+                    {
+                        BOOST_LOG_TRIVIAL(warning)
+                            << "OrcaImporter: Failed to convert filament_shrinkage_compensation_z in " << profile_name
+                            << ": " << e.what();
+                    }
+                }
+            }
         }
 
         // Handle printable_area -> bed_shape specially (JSON array of "XxY" strings -> CSV)
@@ -352,6 +442,98 @@ int OrcaConfigImporter::parse_and_map_profile(const std::string &json_content, P
             }
         }
 
+        // Handle support Z distances specially for print profiles (Orca float mm -> preFlight enum).
+        if (preset_type == Preset::TYPE_PRINT)
+        {
+            auto parse_z_distance = [](const nlohmann::json &val) -> double
+            {
+                if (val.is_number())
+                    return val.get<double>();
+                if (val.is_string())
+                {
+                    try
+                    {
+                        return std::stod(val.get<std::string>());
+                    }
+                    catch (...)
+                    {
+                    }
+                }
+                if (val.is_array() && !val.empty())
+                {
+                    if (val[0].is_number())
+                        return val[0].get<double>();
+                    if (val[0].is_string())
+                    {
+                        try
+                        {
+                            return std::stod(val[0].get<std::string>());
+                        }
+                        catch (...)
+                        {
+                        }
+                    }
+                }
+                return -1.0; // sentinel: parse failed
+            };
+
+            // Top contact: use "custom" enum + set the custom distance float for precise mapping.
+            if (j.contains("support_top_z_distance"))
+            {
+                double dist = parse_z_distance(j["support_top_z_distance"]);
+                if (dist >= 0.0)
+                {
+                    try
+                    {
+                        if (dist < 0.001)
+                        {
+                            out_config.set_deserialize_strict("support_material_contact_distance", "no_gap");
+                        }
+                        else
+                        {
+                            char dist_buf[64];
+                            snprintf(dist_buf, sizeof(dist_buf), "%g", dist);
+                            out_config.set_deserialize_strict("support_material_contact_distance", "custom");
+                            out_config.set_deserialize_strict("support_material_contact_distance_custom",
+                                                              std::string(dist_buf));
+                        }
+                        ++mapped_count;
+                    }
+                    catch (const std::exception &e)
+                    {
+                        BOOST_LOG_TRIVIAL(warning) << "OrcaImporter: Failed to convert support_top_z_distance in "
+                                                   << profile_name << ": " << e.what();
+                    }
+                }
+            }
+
+            // Bottom contact: no "custom" option, use thresholds.
+            if (j.contains("support_bottom_z_distance"))
+            {
+                double dist = parse_z_distance(j["support_bottom_z_distance"]);
+                if (dist >= 0.0)
+                {
+                    try
+                    {
+                        std::string enum_val;
+                        if (dist < 0.05)
+                            enum_val = "no_gap";
+                        else if (dist < 0.15)
+                            enum_val = "half_layer";
+                        else
+                            enum_val = "full_layer";
+                        out_config.set_deserialize_strict("support_material_bottom_contact_distance", enum_val);
+                        ++mapped_count;
+                    }
+                    catch (const std::exception &e)
+                    {
+                        BOOST_LOG_TRIVIAL(warning) << "OrcaImporter: Failed to convert support_bottom_z_distance in "
+                                                   << profile_name << ": " << e.what();
+                    }
+                }
+            }
+        }
+
         // Iterate all JSON keys
         for (auto &[key, value] : j.items())
         {
@@ -360,8 +542,15 @@ int OrcaConfigImporter::parse_and_map_profile(const std::string &json_content, P
                 key == "setting_id" || key == "printable_area")
                 continue;
 
-            // Skip bed temperature keys for filaments (handled above)
-            if (preset_type == Preset::TYPE_FILAMENT && (key.find("_plate_temp") != std::string::npos))
+            // Skip bed temperature and shrinkage compensation keys for filaments (handled above)
+            if (preset_type == Preset::TYPE_FILAMENT &&
+                (key.find("_plate_temp") != std::string::npos || key == "filament_shrink" ||
+                 key == "filament_shrinkage_compensation_z"))
+                continue;
+
+            // Skip support Z distance keys for print profiles (handled above)
+            if (preset_type == Preset::TYPE_PRINT &&
+                (key == "support_top_z_distance" || key == "support_bottom_z_distance"))
                 continue;
 
             if (mapper.is_ignored(key, preset_type))

@@ -408,6 +408,14 @@ void ImGuiControl::draw_label(std::string label, const ImRect &thumb, bool is_mi
     if (label.empty() || label == "ErrVal")
         return;
 
+    // Use legend font for labels if set
+    if (m_label_font)
+        ImGui::PushFont(m_label_font);
+
+    // Allow labels to render outside the slider window clip rect
+    ImDrawList *draw_list = ImGui::GetCurrentWindow()->DrawList;
+    draw_list->PushClipRectFullScreen();
+
     const ImVec2 thumb_center = thumb.GetCenter();
     ImVec2 text_padding = m_draw_opts.text_padding();
     float rounding = m_draw_opts.rounding();
@@ -417,6 +425,17 @@ void ImGuiControl::draw_label(std::string label, const ImRect &thumb, bool is_mi
 
     ImVec2 text_content_size = ImGui::CalcTextSize(label.c_str());
     ImVec2 text_size = text_content_size + text_padding * 2;
+
+    // Auto-mirror horizontal labels that would overflow the window
+    if (!is_mirrored && is_horizontal())
+    {
+        float right_edge = thumb.Max.x + triangle_offset_x + text_size.x;
+        ImVec2 window_size = ImGui::GetWindowSize();
+        ImVec2 window_pos = ImGui::GetWindowPos();
+        if (right_edge > window_pos.x + window_size.x)
+            is_mirrored = true;
+    }
+
     ImVec2 text_start = is_horizontal()
                             ? ImVec2(thumb.Max.x + triangle_offset_x, thumb_center.y - text_size.y)
                             : ImVec2(thumb.Min.x - text_size.x - triangle_offset_x, thumb_center.y - text_size.y);
@@ -472,11 +491,17 @@ void ImGuiControl::draw_label(std::string label, const ImRect &thumb, bool is_mi
         pos_3 = is_horizontal() ? pos_1 - ImVec2(0.f, triangle_offset_y) : pos_1 + ImVec2(triangle_offset_x, 0.f);
     }
 
-    // Theme-aware label background
-    const ImU32 label_bg = get_label_bg_clr();
-    ImGui::RenderFrame(text_rect.Min, text_rect.Max, label_bg, true, rounding);
-    ImGui::GetCurrentWindow()->DrawList->AddTriangleFilled(pos_1, pos_2, pos_3, label_bg);
+    // Orange background with black text for visibility
+    ImGui::RenderFrame(text_rect.Min, text_rect.Max, thumb_bg_clr, true, rounding);
+    ImGui::GetCurrentWindow()->DrawList->AddTriangleFilled(pos_1, pos_2, pos_3, thumb_bg_clr);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
     ImGui::RenderText(text_start + text_padding, label.c_str());
+    ImGui::PopStyleColor();
+
+    draw_list->PopClipRect();
+
+    if (m_label_font)
+        ImGui::PopFont();
 };
 
 void ImGuiControl::draw_thumb(const ImVec2 &center, bool mark /* = false*/)

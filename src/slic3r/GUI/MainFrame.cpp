@@ -195,22 +195,11 @@ MainFrame::MainFrame(const int font_point_size)
     {
     default:
     case GUI_App::EAppMode::Editor:
+        // Don't call SetIcon - let macOS use the .icns from the app bundle for proper squircle clipping
         m_taskbar_icon = std::make_unique<preFlightTaskBarIcon>(wxTBI_DOCK);
-        {
-            wxBitmap bmp = get_bmp_bundle("preFlight", 128)->GetBitmap(wxSize(128, 128));
-            wxIcon icon;
-            icon.CopyFromBitmap(bmp);
-            m_taskbar_icon->SetIcon(icon, "preFlight");
-        }
         break;
     case GUI_App::EAppMode::GCodeViewer:
         m_taskbar_icon = std::make_unique<GCodeViewerTaskBarIcon>(wxTBI_DOCK);
-        {
-            wxBitmap bmp = get_bmp_bundle("preFlight-gcodeviewer", 128)->GetBitmap(wxSize(128, 128));
-            wxIcon icon;
-            icon.CopyFromBitmap(bmp);
-            m_taskbar_icon->SetIcon(icon, "G-code Viewer");
-        }
         break;
     }
 #endif // __APPLE__
@@ -1064,7 +1053,7 @@ void MainFrame::init_tabpanel()
                         m_plater->Show();
                         Layout();
                     }
-                    m_plater->select_view_3D("Preview");
+                    m_modern_tabbar->SelectTab(ModernTabBar::TAB_PREVIEW);
                     m_plater->reslice();
                 }
             },

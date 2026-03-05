@@ -281,8 +281,11 @@ std::vector<IslandExtrusions> extract_island_extrusions(const LayerSlice &lslice
         return should_pick_extrusion(eec, region) && eec.role() != ExtrusionRole::Ironing;
     };
 
-    std::vector<std::reference_wrapper<const LayerIsland>> ordered_islands = get_ordered_islands(lslice,
-                                                                                                 previous_position);
+    // Transform to local coords for island ordering (island boundaries are in object-local coords)
+    std::optional<Point> local_prev;
+    if (previous_position.has_value())
+        local_prev = *previous_position - offset;
+    std::vector<std::reference_wrapper<const LayerIsland>> ordered_islands = get_ordered_islands(lslice, local_prev);
 
     std::vector<IslandExtrusions> result;
     for (const LayerIsland &island : ordered_islands)
@@ -329,8 +332,11 @@ std::vector<InfillRange> extract_ironing_extrusions(const LayerSlice &lslice, co
         return should_pick_extrusion(eec, region) && eec.role() == ExtrusionRole::Ironing;
     };
 
-    std::vector<std::reference_wrapper<const LayerIsland>> ordered_islands = get_ordered_islands(lslice,
-                                                                                                 previous_position);
+    // Transform to local coords for island ordering (island boundaries are in object-local coords)
+    std::optional<Point> local_prev;
+    if (previous_position.has_value())
+        local_prev = *previous_position - offset;
+    std::vector<std::reference_wrapper<const LayerIsland>> ordered_islands = get_ordered_islands(lslice, local_prev);
 
     std::vector<InfillRange> result;
     for (const LayerIsland &island : ordered_islands)
@@ -356,7 +362,23 @@ std::vector<SliceExtrusions> get_slices_extrusions(const Print &print, const Lay
 
     std::vector<SliceExtrusions> result;
 
-    for (size_t idx : layer.lslice_indices_sorted_by_print_order)
+    // Re-chain lslices by nearest-neighbor from current nozzle position.
+    // The pre-computed order doesn't account for where the nozzle is after brim/skirt.
+    // previous_position is in global bed coords; lslice geometry is in object-local coords.
+    Points lslice_points;
+    lslice_points.reserve(layer.lslices.size());
+    for (const ExPolygon &ep : layer.lslices)
+        lslice_points.push_back(ep.contour.centroid());
+    const Point *start_near = nullptr;
+    Point local_start;
+    if (previous_position.has_value())
+    {
+        local_start = *previous_position - offset;
+        start_near = &local_start;
+    }
+    std::vector<size_t> lslice_order = chain_points(lslice_points, start_near);
+
+    for (size_t idx : lslice_order)
     {
         const LayerSlice &lslice = layer.lslices_ex[idx];
         std::vector<IslandExtrusions> island_extrusions{
@@ -424,7 +446,8 @@ std::vector<SupportPath> get_support_extrusions(const unsigned int extruder_id,
                         entities_cache.emplace_back(ee);
             }
             std::vector<SupportPath> paths;
-            for (const ExtrusionEntityReference &entity_reference : chain_extrusion_references(entities))
+            const Point *support_start = previous_position.has_value() ? &*previous_position : nullptr;
+            for (const ExtrusionEntityReference &entity_reference : chain_extrusion_references(entities, support_start))
             {
                 auto collection{dynamic_cast<const ExtrusionEntityCollection *>(&entity_reference.extrusion_entity())};
                 const bool is_interface{entity_reference.extrusion_entity().role() != ExtrusionRole::SupportMaterial};
@@ -649,11 +672,14 @@ std::vector<ExtruderExtrusions> get_extrusions(
         }
 
         // Extrude brim with the extruder of the 1st region.
+        // Chain brim entities by nearest-neighbor from current position (skirt end, wipe tower, etc.)
         if (get_brim)
         {
-            for (const ExtrusionEntity *entity : print.brim().entities)
+            const Point *brim_start = previous_position.has_value() ? &*previous_position : nullptr;
+            for (const auto &[entity_idx, flipped] : chain_extrusion_entities(print.brim().entities, brim_start))
             {
-                bool reverse{false};
+                const ExtrusionEntity *entity = print.brim().entities[entity_idx];
+                bool reverse{flipped};
                 bool is_loop{false};
                 if (auto loop = dynamic_cast<const ExtrusionLoop *>(entity))
                 {

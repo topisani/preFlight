@@ -58,6 +58,7 @@ WallToolPaths::WallToolPaths(const Polygons &outline, const coord_t bead_width_0
     , spacing_override_internal(0)
     , spacing_override_innermost(0)
     , debug_layer_id(layer_id)
+    , thin_wall_snap_precision(10000)
 {
     assert(!print_config.nozzle_diameter.empty());
     this->min_nozzle_diameter = float(
@@ -107,7 +108,8 @@ WallToolPaths::WallToolPaths(const Polygons &outline, const coord_t bead_width_0
                              const size_t inset_count, const coord_t wall_0_inset, const coordf_t layer_height,
                              const PrintObjectConfig &print_object_config, const PrintConfig &print_config,
                              coord_t fixed_width_0, coord_t fixed_width_x, coord_t spacing_0, coord_t spacing_x,
-                             coord_t spacing_innermost, int layer_id, double min_bead_width_factor)
+                             coord_t spacing_innermost, int layer_id, double min_bead_width_factor,
+                             coord_t thin_wall_snap_precision)
     : outline(outline)
     , bead_width_0(bead_width_0)
     , bead_width_x(bead_width_x)
@@ -129,6 +131,7 @@ WallToolPaths::WallToolPaths(const Polygons &outline, const coord_t bead_width_0
     , spacing_override_internal(spacing_x)
     , spacing_override_innermost(spacing_innermost)
     , debug_layer_id(layer_id)
+    , thin_wall_snap_precision(thin_wall_snap_precision)
 {
     assert(!print_config.nozzle_diameter.empty());
     this->min_nozzle_diameter = float(
@@ -732,44 +735,111 @@ const std::vector<VariableWidthLines> &WallToolPaths::generate()
         return toolpaths;
     }
 
-    const float external_perimeter_extrusion_width =
-        Flow::rounded_rectangle_extrusion_width_from_spacing(unscale<float>(bead_width_0), float(this->layer_height));
-    const float perimeter_extrusion_width =
-        Flow::rounded_rectangle_extrusion_width_from_spacing(unscale<float>(bead_width_x), float(this->layer_height));
+    // Thin-wall detection: if polygon's effective width is <= bead_width_0,
+    // it can only fit a single perimeter. Bypass SkeletalTrapezoidation
+    // (which can fail due to Voronoi robustness issues on small polygons)
+    // and generate a simple thin-wall loop directly - just like thin wall handling.
+    bool use_thin_wall_path = false;
+    double total_area_tw = 0;
+    double total_perim_tw = 0;
+    for (const Polygon &poly : prepared_outline)
+    {
+        double a = std::abs(poly.area());
+        double p = poly.length();
+        if (a > 0 && p > 0)
+        {
+            total_area_tw += a;
+            total_perim_tw += p;
+        }
+    }
+    double effective_width_tw = (total_perim_tw > 0) ? (2.0 * total_area_tw / total_perim_tw) : 0;
 
-    const double wall_split_middle_threshold =
-        std::clamp(2. * unscaled<double>(this->min_bead_width) / external_perimeter_extrusion_width - 1., 0.01,
-                   0.99); // For an uneven nr. of lines: When to split the middle wall into two.
-    const double wall_add_middle_threshold =
-        std::clamp(unscaled<double>(this->min_bead_width) / perimeter_extrusion_width, 0.01,
-                   0.99); // For an even nr. of lines: When to add a new middle in between the innermost two walls.
+    // If the effective width is at most one bead wide AND the polygon is small,
+    // the Voronoi-based SkeletalTrapezoidation is unreliable (it can produce empty results
+    // or garbage for certain small polygon vertex arrangements, e.g. cone tips).
+    // Treat as a thin wall: generate a single centerline perimeter loop directly.
+    // preFlight: Only bypass Voronoi for small polygons. Large thin geometry (e.g. a thin
+    // annular ring exactly one bead wide) has enough vertices for Voronoi to work correctly,
+    // and the thin-wall offset path fragments it into swiss cheese.
+    constexpr double MAX_THIN_WALL_PERIMETER_FACTOR = 12.0;
+    double max_thin_wall_perimeter = double(bead_width_0) * MAX_THIN_WALL_PERIMETER_FACTOR;
+    if (effective_width_tw > 0 && effective_width_tw <= double(bead_width_0) &&
+        total_perim_tw <= max_thin_wall_perimeter)
+        use_thin_wall_path = true;
 
-    // Athena maintains fixed widths, so distribution only affects spacing.
-    // Value of 1 means only innermost perimeter absorbs spacing variation.
-    const int wall_distribution_count = 1;
-    (void) this->print_object_config.wall_distribution_count; // Suppress unused warning
-    const size_t max_bead_count = (size_t(inset_count) < size_t(std::numeric_limits<coord_t>::max() / 2))
-                                      ? 2 * inset_count
-                                      : std::numeric_limits<coord_t>::max();
-    const auto beading_strat = BeadingStrategyFactory::makeStrategy(
-        bead_width_0,         // ext_perimeter_spacing
-        fixed_width_external, // ext_perimeter_width
-        bead_width_x,         // perimeter_spacing
-        fixed_width_internal, // perimeter_width
-        wall_transition_length, transitioning_angle, print_thin_walls, min_bead_width, min_feature_size,
-        wall_split_middle_threshold, wall_add_middle_threshold, max_bead_count, wall_0_inset, wall_distribution_count,
-        spacing_override_external, // ext_to_first_internal_spacing
-        spacing_override_innermost, coord_t(inset_count),
-        debug_layer_id // For debug output
-    );
-    const coord_t transition_filter_dist = scaled<coord_t>(100.f);
-    const coord_t allowed_filter_deviation = wall_transition_filter_deviation;
+    if (use_thin_wall_path)
+    {
+        // Thin-wall path: generate a single centerline perimeter loop directly.
+        // This bypasses the Voronoi diagram entirely, avoiding robustness issues.
+        coord_t bead_w = std::max(coord_t(effective_width_tw), min_feature_size);
+        bead_w = std::min(bead_w, bead_width_0);
 
-    SkeletalTrapezoidation wall_maker(prepared_outline, *beading_strat, beading_strat->getTransitioningAngle(),
-                                      discretization_step_size, transition_filter_dist, allowed_filter_deviation,
-                                      wall_transition_length);
+        // Offset inward by half the bead width to get the extrusion centerline
+        coord_t inward = bead_w / 2;
+        Polygons centerlines = offset(prepared_outline, -float(inward));
 
-    wall_maker.generateToolpaths(toolpaths);
+        // If the primary offset produced nothing (e.g., elongated shape narrower than bead_w at some point),
+        // try progressively smaller offsets down to min_feature_size/2
+        if (centerlines.empty() && bead_w > min_feature_size)
+        {
+            // Try with min_feature_size as the bead width
+            bead_w = min_feature_size;
+            inward = bead_w / 2;
+            centerlines = offset(prepared_outline, -float(inward));
+        }
+
+        if (!centerlines.empty())
+        {
+            VariableWidthLines thin_wall_lines;
+            for (const Polygon &cl : centerlines)
+            {
+                if (cl.size() < 3)
+                    continue;
+                ExtrusionLine line(0, false, true); // inset_idx=0 (outer wall), not odd, closed loop
+                line.junctions.reserve(cl.size() + 1);
+                for (const Point &pt : cl.points)
+                    line.junctions.push_back({pt, bead_w, 0});
+                // Close the loop by repeating the first point
+                line.junctions.push_back({cl.points.front(), bead_w, 0});
+                thin_wall_lines.push_back(std::move(line));
+            }
+            if (!thin_wall_lines.empty())
+                toolpaths.push_back(std::move(thin_wall_lines));
+        }
+    }
+    else
+    {
+        // Normal path: use SkeletalTrapezoidation (Voronoi-based wall generation)
+        const float external_perimeter_extrusion_width = Flow::rounded_rectangle_extrusion_width_from_spacing(
+            unscale<float>(bead_width_0), float(this->layer_height));
+        const float perimeter_extrusion_width = Flow::rounded_rectangle_extrusion_width_from_spacing(
+            unscale<float>(bead_width_x), float(this->layer_height));
+
+        const double wall_split_middle_threshold = std::clamp(
+            2. * unscaled<double>(this->min_bead_width) / external_perimeter_extrusion_width - 1., 0.01, 0.99);
+        const double wall_add_middle_threshold = std::clamp(unscaled<double>(this->min_bead_width) /
+                                                                perimeter_extrusion_width,
+                                                            0.01, 0.99);
+
+        const int wall_distribution_count = 1;
+        (void) this->print_object_config.wall_distribution_count;
+        const size_t max_bead_count = (size_t(inset_count) < size_t(std::numeric_limits<coord_t>::max() / 2))
+                                          ? 2 * inset_count
+                                          : std::numeric_limits<coord_t>::max();
+        const auto beading_strat = BeadingStrategyFactory::makeStrategy(
+            bead_width_0, fixed_width_external, bead_width_x, fixed_width_internal, wall_transition_length,
+            transitioning_angle, print_thin_walls, min_bead_width, min_feature_size, wall_split_middle_threshold,
+            wall_add_middle_threshold, max_bead_count, wall_0_inset, wall_distribution_count, spacing_override_external,
+            spacing_override_innermost, coord_t(inset_count), debug_layer_id, thin_wall_snap_precision);
+        const coord_t transition_filter_dist = scaled<coord_t>(100.f);
+        const coord_t allowed_filter_deviation = wall_transition_filter_deviation;
+
+        SkeletalTrapezoidation wall_maker(prepared_outline, *beading_strat, beading_strat->getTransitioningAngle(),
+                                          discretization_step_size, transition_filter_dist, allowed_filter_deviation,
+                                          wall_transition_length);
+
+        wall_maker.generateToolpaths(toolpaths);
+    }
 
     stitchToolPaths(toolpaths, this->bead_width_x);
 

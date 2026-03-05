@@ -1957,7 +1957,7 @@ bool DownloaderUtils::Worker::perform_url_register()
     {
         key_full.Create(false);
     }
-    // Old PrusaSlicer path removed
+    // Legacy path removed
     key_full = key_string;
 #elif __APPLE__
     // Apple registers for custom url in info.plist thus it has to be already registered since build.

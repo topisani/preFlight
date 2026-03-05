@@ -1143,6 +1143,14 @@ void DSForLayers::Render(const int canvas_width, const int canvas_height, float 
     ImVec2 size = ImVec2(VERTICAL_SLIDER_WIDTH,
                          canvas_height - 4.f * action_btn_sz - offset); // VERTICAL_SLIDER_WIDTH already scaled
 
+    // Use legend font for slider labels
+    if (m_imgui)
+    {
+        ImFont *legend_font = m_imgui->get_legend_font();
+        if (legend_font)
+            m_ctrl.set_label_font(legend_font);
+    }
+
     m_ctrl.Init(pos, size, m_scale, m_show_ruler);
     if (m_ctrl.render())
     {

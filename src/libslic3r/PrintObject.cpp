@@ -2215,12 +2215,47 @@ void PrintObject::bridge_over_infill()
             unsupported_area = shrink(unsupported_area, 3 * spacing);
             unsupported_area = diff(unsupported_area, lower_layer_solids);
 
+            // preFlight: Collect solid infill from the grandparent layer (2 below current) to detect
+            // shallow sparse gaps. If the grandparent has solid coverage in the unsupported area,
+            // the sparse gap is only 1 layer deep - too shallow to warrant bridge treatment.
+            // The sparse infill lines still provide adequate support for a single-layer gap.
+            Polygons grandparent_solids;
+            const Layer *grandparent = layer->lower_layer ? layer->lower_layer->lower_layer : nullptr;
+            if (grandparent != nullptr)
+            {
+                for (const LayerRegion *gp_region : grandparent->regions())
+                {
+                    for (const Surface &surface : gp_region->fill_surfaces())
+                    {
+                        if (surface.surface_type != stInternal ||
+                            gp_region->region().config().fill_density.value == 100)
+                        {
+                            Polygons p = to_polygons(surface.expolygon);
+                            grandparent_solids.insert(grandparent_solids.end(), p.begin(), p.end());
+                        }
+                    }
+                }
+                if (!grandparent_solids.empty())
+                    grandparent_solids = closing(grandparent_solids, float(SCALED_EPSILON));
+            }
+
             for (const LayerRegion *region : layer->regions())
             {
                 SurfacesPtr region_internal_solids = region->fill_surfaces().filter_by_type(stInternalSolid);
                 for (const Surface *s : region_internal_solids)
                 {
                     Polygons unsupported = intersection(to_polygons(s->expolygon), unsupported_area);
+
+                    // preFlight: Skip bridging when the sparse gap below is only 1 layer deep.
+                    // If the grandparent layer (2 below) has solid covering >50% of the unsupported
+                    // area, the sparse is a shallow gap and the infill lines provide adequate support.
+                    if (!grandparent_solids.empty() && !unsupported.empty())
+                    {
+                        double shallow_coverage = area(intersection(unsupported, grandparent_solids));
+                        if (shallow_coverage > area(unsupported) * 0.5)
+                            continue;
+                    }
+
                     // The following flag marks those surfaces, which overlap with unuspported area, but at least part of them is supported.
                     // These regions can be filtered by area, because they for sure are touching solids on lower layers, and it does not make sense to bridge their tiny overhangs
                     bool partially_supported = area(unsupported) < area(to_polygons(s->expolygon)) - EPSILON;
@@ -3385,7 +3420,7 @@ SlicingParameters PrintObject::slicing_parameters(const DynamicPrintConfig &full
             PrintRegion::collect_object_printing_extruders(
                 print_config,
                 region_config_from_model_volume(default_region_config, nullptr, *model_volume, num_extruders),
-                object_config.brim_type != btNoBrim && object_config.brim_width > 0., object_extruders);
+                object_config.brim_type == btPainted || object_config.brim_width > 0., object_extruders);
             for (const std::pair<const t_layer_height_range, ModelConfig> &range_and_config :
                  model_object.layer_config_ranges)
                 if (range_and_config.second.has("perimeter_extruder") ||
@@ -3395,7 +3430,7 @@ SlicingParameters PrintObject::slicing_parameters(const DynamicPrintConfig &full
                         print_config,
                         region_config_from_model_volume(default_region_config, &range_and_config.second.get(),
                                                         *model_volume, num_extruders),
-                        object_config.brim_type != btNoBrim && object_config.brim_width > 0., object_extruders);
+                        object_config.brim_type == btPainted || object_config.brim_width > 0., object_extruders);
         }
     sort_remove_duplicates(object_extruders);
     //FIXME add painting extruders

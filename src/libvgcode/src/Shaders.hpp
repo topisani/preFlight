@@ -9,11 +9,17 @@
 // needed for tech VGCODE_ENABLE_COG_AND_TOOL_MARKERS
 #include "../include/Types.hpp"
 
+// RPi 5 V3D GPU supports GLSL 1.40 max (OpenGL 3.1); other platforms use GLSL 1.50 (OpenGL 3.2)
+#if defined(__linux__) && defined(__aarch64__)
+#define VGCODE_GLSL_VERSION "#version 140\n"
+#else
+#define VGCODE_GLSL_VERSION "#version 150\n"
+#endif
+
 namespace libvgcode
 {
 
-static const char *Segments_Vertex_Shader =
-    "#version 150\n"
+static const char *Segments_Vertex_Shader = VGCODE_GLSL_VERSION
     "#define POINTY_CAPS\n"
     "#define FIX_TWISTING\n"
     "const vec3  light_top_dir = vec3(-0.4574957, 0.4574957, 0.7624929);\n"
@@ -184,17 +190,15 @@ static const char *Segments_Vertex_Shader =
     "  gl_Position = projection_matrix * vec4(eye_position, 1.0);\n"
     "}\n";
 
-static const char *Segments_Fragment_Shader = "#version 150\n"
-                                              "in vec3 color;\n"
-                                              "in float clipping_dist;\n"
-                                              "out vec4 fragment_color;\n"
-                                              "void main() {\n"
-                                              "  if (clipping_dist < 0.0) discard;\n"
-                                              "  fragment_color = vec4(color, 1.0);\n"
-                                              "}\n";
+static const char *Segments_Fragment_Shader = VGCODE_GLSL_VERSION "in vec3 color;\n"
+                                                                  "in float clipping_dist;\n"
+                                                                  "out vec4 fragment_color;\n"
+                                                                  "void main() {\n"
+                                                                  "  if (clipping_dist < 0.0) discard;\n"
+                                                                  "  fragment_color = vec4(color, 1.0);\n"
+                                                                  "}\n";
 
-static const char *Options_Vertex_Shader =
-    "#version 150\n"
+static const char *Options_Vertex_Shader = VGCODE_GLSL_VERSION
     "const vec3  light_top_dir = vec3(-0.4574957, 0.4574957, 0.7624929);\n"
     "const float light_top_diffuse = 0.6 * 0.8;\n"
     "const float light_top_specular = 0.6 * 0.125;\n"
@@ -247,18 +251,16 @@ static const char *Options_Vertex_Shader =
     "  gl_Position = projection_matrix * vec4(eye_position, 1.0);\n"
     "}\n";
 
-static const char *Options_Fragment_Shader = "#version 150\n"
-                                             "in vec3 color;\n"
-                                             "in float clipping_dist;\n"
-                                             "out vec4 fragment_color;\n"
-                                             "void main() {\n"
-                                             "  if (clipping_dist < 0.0) discard;\n"
-                                             "  fragment_color = vec4(color, 1.0);\n"
-                                             "}\n";
+static const char *Options_Fragment_Shader = VGCODE_GLSL_VERSION "in vec3 color;\n"
+                                                                 "in float clipping_dist;\n"
+                                                                 "out vec4 fragment_color;\n"
+                                                                 "void main() {\n"
+                                                                 "  if (clipping_dist < 0.0) discard;\n"
+                                                                 "  fragment_color = vec4(color, 1.0);\n"
+                                                                 "}\n";
 
 #if VGCODE_ENABLE_COG_AND_TOOL_MARKERS
-static const char *Cog_Marker_Vertex_Shader =
-    "#version 150\n"
+static const char *Cog_Marker_Vertex_Shader = VGCODE_GLSL_VERSION
     "const vec3  light_top_dir = vec3(-0.4574957, 0.4574957, 0.7624929);\n"
     "const float light_top_diffuse = 0.6 * 0.8;\n"
     "const float light_top_specular = 0.6 * 0.125;\n"
@@ -289,22 +291,21 @@ static const char *Cog_Marker_Vertex_Shader =
     "  gl_Position = projection_matrix * vec4(eye_position, 1.0);\n"
     "}\n";
 
-static const char *Cog_Marker_Fragment_Shader = "#version 150\n"
-                                                "const vec3 BLACK = vec3(0.05);\n"
-                                                "const vec3 WHITE = vec3(0.95);\n"
-                                                "uniform vec3 world_center_position;\n"
-                                                "in float intensity;\n"
-                                                "in vec3 world_position;\n"
-                                                "out vec4 out_color;\n"
-                                                "void main()\n"
-                                                "{\n"
-                                                "  vec3 delta = world_position - world_center_position;\n"
-                                                "  vec3 color = delta.x * delta.y * delta.z > 0.0 ? BLACK : WHITE;\n"
-                                                "  out_color = intensity * vec4(color, 1.0);\n"
-                                                "}\n";
+static const char *Cog_Marker_Fragment_Shader = VGCODE_GLSL_VERSION
+    "const vec3 BLACK = vec3(0.05);\n"
+    "const vec3 WHITE = vec3(0.95);\n"
+    "uniform vec3 world_center_position;\n"
+    "in float intensity;\n"
+    "in vec3 world_position;\n"
+    "out vec4 out_color;\n"
+    "void main()\n"
+    "{\n"
+    "  vec3 delta = world_position - world_center_position;\n"
+    "  vec3 color = delta.x * delta.y * delta.z > 0.0 ? BLACK : WHITE;\n"
+    "  out_color = intensity * vec4(color, 1.0);\n"
+    "}\n";
 
-static const char *Tool_Marker_Vertex_Shader =
-    "#version 150\n"
+static const char *Tool_Marker_Vertex_Shader = VGCODE_GLSL_VERSION
     "const vec3  light_top_dir = vec3(-0.4574957, 0.4574957, 0.7624929);\n"
     "const float light_top_diffuse = 0.6 * 0.8;\n"
     "const float light_top_specular = 0.6 * 0.125;\n"
@@ -336,12 +337,11 @@ static const char *Tool_Marker_Vertex_Shader =
     "  gl_Position = projection_matrix * vec4(eye_position, 1.0);\n"
     "}\n";
 
-static const char *Tool_Marker_Fragment_Shader = "#version 150\n"
-                                                 "in vec4 color;\n"
-                                                 "out vec4 fragment_color;\n"
-                                                 "void main() {\n"
-                                                 "  fragment_color = color;\n"
-                                                 "}\n";
+static const char *Tool_Marker_Fragment_Shader = VGCODE_GLSL_VERSION "in vec4 color;\n"
+                                                                     "out vec4 fragment_color;\n"
+                                                                     "void main() {\n"
+                                                                     "  fragment_color = color;\n"
+                                                                     "}\n";
 #endif // VGCODE_ENABLE_COG_AND_TOOL_MARKERS
 
 } // namespace libvgcode

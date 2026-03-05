@@ -371,7 +371,12 @@ public:
 
     bool has_brim() const
     {
-        return this->config().brim_type != btNoBrim && this->config().brim_width.value > 0. && !this->has_raft();
+        if (this->has_raft())
+            return false;
+        // Painted mouse ears don't use brim_width - each point has its own radius
+        if (this->config().brim_type == btPainted)
+            return true;
+        return this->config().brim_width.value > 0.;
     }
 
     // This is the *total* layer count (including support layers)

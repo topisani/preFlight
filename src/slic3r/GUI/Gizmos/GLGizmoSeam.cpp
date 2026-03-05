@@ -42,7 +42,11 @@ bool GLGizmoSeam::on_init()
     m_desc["enforce"] = _u8L("Enforce seam");
     m_desc["block_caption"] = _u8L("Right mouse button") + ": ";
     m_desc["block"] = _u8L("Block seam");
+#ifdef __APPLE__
+    m_desc["draw_caption"] = _u8L("Cmd + Left mouse button") + ": ";
+#else
     m_desc["draw_caption"] = _u8L("Ctrl + Left mouse button") + ": ";
+#endif
     m_desc["draw"] = _u8L("Draw line");
     m_desc["remove_caption"] = _u8L("Shift + Left mouse button") + ": ";
     m_desc["remove"] = _u8L("Remove selection");

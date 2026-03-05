@@ -825,6 +825,27 @@ void Bed3D::render_default(bool bottom, bool picking, bool show_texture, const T
 
                 grid_shader->stop_using();
             }
+#if defined(__linux__) && defined(__aarch64__)
+            // RPi V3D lacks geometry shaders, fall back to solid grid lines via flat shader
+            else
+            {
+                GLShaderProgram *flat_shader = wxGetApp().get_shader("flat");
+                if (flat_shader != nullptr)
+                {
+                    flat_shader->start_using();
+                    flat_shader->set_uniform("view_model_matrix", view_matrix);
+                    flat_shader->set_uniform("projection_matrix", projection_matrix);
+
+                    glsafe(::glEnable(GL_BLEND));
+                    glsafe(::glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
+
+                    m_gridlines.set_color(get_grid_color());
+                    m_gridlines.render();
+
+                    flat_shader->stop_using();
+                }
+            }
+#endif
 
             shader->start_using(); // Restart flat shader
             shader->set_uniform("view_model_matrix", view_matrix);

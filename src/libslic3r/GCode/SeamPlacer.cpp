@@ -137,13 +137,6 @@ Params Placer::get_params(const DynamicPrintConfig &config)
     params.rear_tolerance = 1.0;
     params.rear_y_offset = 20;
     params.aligned.jump_visibility_threshold = 0.6;
-    // preFlight: snap-to-reference at nozzle diameter to prevent seam drift
-    {
-        const auto *nozzle_diameters = config.opt<ConfigOptionFloats>("nozzle_diameter");
-        const double nozzle_d = (nozzle_diameters && !nozzle_diameters->empty()) ? nozzle_diameters->values.front()
-                                                                                 : 0.4;
-        params.aligned.snap_tolerance = nozzle_d;
-    }
     params.max_distance = 5.0;
     params.perimeter.oversampling_max_distance = 0.2;
     params.perimeter.embedding_threshold = 0.5;
@@ -279,10 +272,10 @@ boost::variant<Point, Scarf::Scarf> finalize_seam_position(const ExtrusionLoop &
     using Perimeters::PointOnPerimeter;
 
     const Polygon loop_polygon{Geometry::to_polygon(loop)};
-    // Don't stagger the first inner perimeter (index 1) when Nip/Tuck is enabled,
-    // because Nip/Tuck trims it at a specific seam location
+    // Don't stagger the first inner perimeter (index 1) when seam notching is active,
+    // because the inner perimeter is trimmed at a specific seam location
     bool is_niptuck_inner = false;
-    if (staggered_inner_seams && region->config().seam_notch.value && !loop.paths.empty())
+    if (staggered_inner_seams && region->config().seam_type.value != sntRegular && !loop.paths.empty())
     {
         auto pi = loop.paths.front().attributes().perimeter_index;
         if (pi.has_value() && *pi == 1)

@@ -23,6 +23,24 @@ namespace Slic3r
 namespace GUI
 {
 
+#ifdef __linux__
+// preFlight: Detect labwc compositor to disable rounded popup corners.
+// labwc's XWayland doesn't honor the X11 Shape extension, so rounded
+// corners show opaque dark fill instead of transparency.
+static bool IsLabwcCompositor()
+{
+    static int s_cached = -1;
+    if (s_cached >= 0)
+        return s_cached != 0;
+
+    s_cached = 0;
+    const char *desktop = getenv("XDG_CURRENT_DESKTOP");
+    if (desktop && std::string(desktop).find("labwc") != std::string::npos)
+        s_cached = 1;
+    return s_cached != 0;
+}
+#endif
+
 // ============================================================================
 // CustomMenuItem Implementation
 // ============================================================================
@@ -577,7 +595,12 @@ void CustomMenu::CalculateSize()
     // Calculate all DPI-scaled values upfront
     m_scaledPadding = static_cast<int>(m_padding * m_dpiScale);
     m_scaledIconPadding = static_cast<int>(m_iconPadding * m_dpiScale);
+#ifdef __linux__
+    // preFlight: Square corners on labwc - its XWayland ignores X11 shape clipping
+    m_scaledCornerRadius = IsLabwcCompositor() ? 0 : static_cast<int>(m_cornerRadius * m_dpiScale);
+#else
     m_scaledCornerRadius = static_cast<int>(m_cornerRadius * m_dpiScale);
+#endif
     m_scaledIconSize = static_cast<int>(20 * m_dpiScale);
     m_scaledIndent = static_cast<int>(10 * m_dpiScale);
     m_scaledShortcutGap = static_cast<int>(20 * m_dpiScale);
@@ -752,6 +775,8 @@ void CustomMenu::ShowAt(const wxPoint &pos, wxWindow *parent)
 #ifdef __WXGTK__
     // preFlight: On Linux/GTK3, clip the popup to a rounded rect using a cairo region.
     // Must be applied AFTER Popup() because the GDK window isn't realized until then.
+    // Skip when corner radius is 0 (labwc) since shape clipping won't work anyway.
+    if (m_scaledCornerRadius > 0)
     {
         GtkWidget *widget = static_cast<GtkWidget *>(GetHandle());
         GdkWindow *gdkWin = widget ? gtk_widget_get_window(widget) : nullptr;

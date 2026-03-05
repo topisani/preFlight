@@ -212,6 +212,15 @@ enum PerimeterCompression
     pcAggressive, // 33% of bead width (aggressive compression)
 };
 
+enum ThinWallPrecision
+{
+    twp001, // 0.001mm (1 micron)
+    twp005, // 0.005mm (5 microns)
+    twp01,  // 0.01mm  (10 microns) - default
+    twp05,  // 0.05mm  (50 microns)
+    twp1,   // 0.1mm   (100 microns)
+};
+
 enum class FanSpinupResponseType
 {
     fsrtAxial,       // Fast response (small axial fans) - exponent 0.7
@@ -318,6 +327,14 @@ enum SeamPosition
     spRear
 };
 
+enum SeamNotchType
+{
+    sntRegular,
+    sntNipTuck,
+    sntNip,
+    sntTuck
+};
+
 enum class ScarfSeamPlacement
 {
     nowhere,
@@ -346,7 +363,6 @@ using SLAPillarConnectionMode = sla::PillarConnectionMode;
 // Ported from OrcaSlicer (originally from SuperSlicer)
 enum BrimType
 {
-    btNoBrim,
     btOuterOnly,
     btInnerOnly,
     btOuterAndInner,
@@ -991,9 +1007,9 @@ PRINT_CONFIG_CLASS_DEFINE(
         (ConfigOptionBool, fuzzy_skin_on_top))((ConfigOptionEnum<FuzzySkinVisibilityDetection>,
                                                 fuzzy_skin_visibility_detection))((ConfigOptionBool, gap_fill_enabled))(
         (ConfigOptionFloat, gap_fill_speed))((ConfigOptionEnum<PerimeterCompression>, perimeter_compression))(
-        (ConfigOptionFloatOrPercent, infill_anchor))((ConfigOptionFloatOrPercent, infill_anchor_max))(
-        (ConfigOptionInt, infill_extruder))((ConfigOptionFloatOrPercent,
-                                             infill_extrusion_width))((ConfigOptionInt, infill_every_layers))(
+        (ConfigOptionEnum<ThinWallPrecision>, thin_wall_precision))((ConfigOptionFloatOrPercent, infill_anchor))(
+        (ConfigOptionFloatOrPercent, infill_anchor_max))((ConfigOptionInt, infill_extruder))(
+        (ConfigOptionFloatOrPercent, infill_extrusion_width))((ConfigOptionInt, infill_every_layers))(
         (ConfigOptionFloatOrPercent, infill_overlap))((ConfigOptionFloatOrPercent, external_perimeter_overlap))(
         (ConfigOptionFloatOrPercent, perimeter_perimeter_overlap))((ConfigOptionFloatOrPercent, bridge_infill_overlap))(
         (ConfigOptionFloatOrPercent, bridge_infill_perimeter_overlap))((ConfigOptionFloat, infill_speed))(
@@ -1025,8 +1041,9 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionEnum<TopOnePerimeterType>, top_one_perimeter_type))((ConfigOptionBool,
                                                                        only_one_perimeter_first_layer))
 
-    // Seam Nip/Tuck
-    ((ConfigOptionBool, seam_notch))((ConfigOptionFloat, seam_notch_width))((ConfigOptionFloat, seam_notch_angle))
+    // Seam type (Regular, Nip/Tuck, Nip, Tuck)
+    ((ConfigOptionEnum<SeamNotchType>, seam_type))((ConfigOptionFloat, seam_notch_width))((ConfigOptionFloat,
+                                                                                           seam_notch_angle))
 
         ((ConfigOptionEnum<ScarfSeamPlacement>, scarf_seam_placement))((ConfigOptionBool, scarf_seam_only_on_smooth))(
             (ConfigOptionPercent, scarf_seam_start_height))((ConfigOptionBool, scarf_seam_entire_loop))(

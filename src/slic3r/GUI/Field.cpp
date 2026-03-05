@@ -1070,11 +1070,11 @@ void SpinCtrl::BUILD()
     if (m_opt.step > 1)
         temp->SetStep(m_opt.step);
 
-#ifdef __WXGTK3__
+#if defined(__WXGTK3__) && !defined(__aarch64__)
     wxSize best_sz = temp->GetBestSize();
     if (best_sz.x > size.x)
         temp->SetSize(wxSize(size.x + 2 * best_sz.y, best_sz.y));
-#endif //__WXGTK3__
+#endif //__WXGTK3__ && !__aarch64__
     temp->SetFont(Slic3r::GUI::wxGetApp().normal_font());
     if (!wxOSX)
         temp->SetBackgroundStyle(wxBG_STYLE_PAINT);
@@ -1414,11 +1414,11 @@ void Choice::BUILD()
 #endif //__WXOSX__
     }
 
-#ifdef __WXGTK3__
+#if defined(__WXGTK3__) && !defined(__aarch64__)
     wxSize best_sz = temp->GetBestSize();
     if (best_sz.x > size.x)
         temp->SetSize(best_sz);
-#endif //__WXGTK3__
+#endif //__WXGTK3__ && !__aarch64__
 
     temp->SetFont(Slic3r::GUI::wxGetApp().normal_font());
     if (!wxOSX)

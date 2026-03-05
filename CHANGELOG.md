@@ -1,5 +1,73 @@
 # preFlight Changelog
 
+## v0.9.7
+
+### Raspberry Pi
+- Added RPi 5 support for 64-bit Raspberry Pi OS
+- OpenGL 3.1 / GLSL 1.40 with flat shader fallback
+- Now compatible with both Bookworm and Trixie
+
+### macOS Support
+- ***preFlight for macOS is now digitally signed! Apple notarization is pending first-submission review***
+
+### New Features
+- **Painted Seam Alignment**: Bidirectional blending system for stable vertical and diagonal seam tracking - forward pass tracks diagonal seams while filtering vertex noise, backward pass straightens early-layer convergence lag. Only activates for painted enforcers on smooth surfaces
+- **Travel Optimization**: Replaced default extrusion ordering with nearest-neighbor chaining across the G-code pipeline - reduced unnecessary travel moves between islands, added 2-opt refinement for shorter travel paths, cross-fragment polyline chaining for connected infill lines
+- **Nip and Tuck Seams**: Added two new seam types: Nip, and Tuck. Nip conceals the start point. Tuck conceals the end point.
+- **Athena Thin Wall Width Precision**: Added user-configurable snap grid (0.001 - 0.1mm) under Print Settings > Advanced to control width oscillation on uniform thin walls
+- **Legend-Specific Tooltips**: Legend-specific values now appear on G-code horizontal slider
+- **3mf Warnings**: Added warning when opening 3mf files from other slicers about configuration differences
+
+### Infill / Fill Improvements
+- Absorbed small sparse infill gaps into adjacent solid fills - eliminated unfilled holes/gaps within solid infill on layers above bridges and internal solid floors
+- Merged fragmented bridge infill regions into unified fills with correct bridge angle
+- Fixed solid infill merge: boundary clipping, adjacency transfer, and hole safety to prevent overlap, flooding, and top-surface overwriting
+- Fixed SOB/InternalSolid merge to use geometric adjacency instead of layer-wide thin heuristic, and corrected tiny-SOB removal threshold from sparse density to solid fill spacing
+- Skipped bridge-over-infill for single-layer sparse gaps - prevented monotonic bridge pattern on isolated layers sandwiched between normal infill
+- Optimized concentric fill: cluster spatially adjacent loops, rotate to nearest vertex
+
+### G-code
+- Eliminated redundant standalone `G1 F` lines
+- Fixed manual fan controls producing no M106 for non-bridge features
+- Stopped emitting machine envelope G-code for RRF/Rapid/Klipper firmware
+- Fixed dynamic overhang speed bucket snapping with sane defaults
+
+### Athena / Wall Generation
+- Added Athena support for concentric infill when Athena is selected as the perimeter generator
+- Fixed certain geometry by treating small polygons as thin walls
+- Fixed thin-wall fragmentation under certain conditions
+
+### Crash Fixes
+- Fixed empty Preview after slicing caused by GL context loss during gcode loading
+- Fixed Clipper2 stack overflow crash
+- Fixed concentric fill hang
+- Fixed int64 overflow in Clipper2 Z callback
+
+### Bug Fixes
+- Fixed painted mouse ears merging with overlapping merged ears
+- Fixed painted mouse ears overlapping object under certain geometry
+- Modified mouse ears to use Athena perimeter generator for better coverage
+- Fixed preview rendering bug when retract_lift equals layer_height
+- Auto-corrected Orca-format shrinkage compensation values on config load
+- Fixed enforce_layers generating support when no auto or painted supports existed
+
+### GPU / Rendering
+- Rolled back over-zealous GPU power-saving event suppression that caused delayed context
+- Scoped GPU power-saving to Preview tab only - Platter reverts to stock responsiveness
+
+### UI Fixes/Changes
+- Layer slider position remains on current layer after reslice
+- Previous layers now darkened in G-code preview except during full render
+- Fixed first mouse scroll over ImGui windows (e.g. G-code command legend) zooming the canvas instead of scrolling
+- Fixed G-code command legend highlighted line not centered during scroll
+- Fixed sidebar items not hiding when individually unticked
+- Fixed object settings panel not expanding to fill available sidebar space
+- Fixed macOS gizmo tooltips to show "Cmd" instead of "Ctrl"
+
+### Packaging
+- Fixed Linux build issues with CGAL GMP guard
+
+
 ## v0.9.6
 
 ### macOS Support (New)

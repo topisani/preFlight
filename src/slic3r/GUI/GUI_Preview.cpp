@@ -43,6 +43,8 @@
 // #include "libslic3r/SLAPrint.hpp"
 #include "NotificationManager.hpp"
 #include "libslic3r/MultipleBeds.hpp"
+#include "libslic3r/ExtrusionRole.hpp"
+#include "LibVGCode/LibVGCodeWrapper.hpp"
 
 #ifdef _WIN32
 #include "BitmapComboBox.hpp"
@@ -315,6 +317,9 @@ void Preview::reload_print()
     if (!IsShown())
         return;
 
+    // Remember current layer position so we can restore it after reslice
+    m_last_layer_pos = m_layers_slider->GetHigherPos();
+
     m_loaded = false;
     load_print();
     m_layers_slider->seq_top_layer_only(wxGetApp().app_config->get_bool("seq_top_layer_only"));
@@ -568,6 +573,15 @@ void Preview::create_sliders()
 
     m_moves_slider->set_callback_on_thumb_move([this]() -> void { on_moves_slider_scroll_changed(); });
 
+    // Show G-code command number and legend-specific value on both thumb labels and hover
+    m_moves_slider->ShowLabelOnMouseMove(true);
+    auto label_cb = [this](int pos) -> std::string
+    {
+        return get_moves_slider_hover_label(pos);
+    };
+    m_moves_slider->SetGetLabelCb(label_cb);
+    m_moves_slider->SetGetLabelOnMoveCb(label_cb);
+
     // m_canvas_widget
     m_canvas_widget->Bind(wxEVT_KEY_DOWN, &Preview::update_sliders_from_canvas, this);
     m_canvas_widget->Bind(EVT_GLCANVAS_SLIDERS_MANIPULATION, &Preview::update_sliders_from_canvas, this);
@@ -691,6 +705,12 @@ void Preview::update_layers_slider(const std::vector<double> &layers_z, bool kee
             if (idx_new != -1)
                 idx_high = idx_new;
         }
+    }
+    // Restore layer position after reslice (clamped to new layer count)
+    if (m_last_layer_pos > 0)
+    {
+        idx_high = std::min(m_last_layer_pos, m_layers_slider->GetMaxPos());
+        m_last_layer_pos = -1;
     }
     m_layers_slider->SetSelectionSpan(idx_low, idx_high);
     m_layers_slider->SetTicksValues(ticks_info_from_model);
@@ -1156,6 +1176,9 @@ void Preview::update_moves_slider(std::optional<int> visible_range_min, std::opt
     m_moves_slider->Thaw();
 
     m_moves_slider->ShowLowerThumb(get_app_config()->get("seq_top_layer_only") == "0");
+
+    // Cache layer times for slider tooltip (avoids per-frame vector copy)
+    m_cached_layer_times = m_canvas->get_gcode_layers_times();
 }
 
 void Preview::enable_moves_slider(bool enable)
@@ -1350,6 +1373,111 @@ void Preview::on_moves_slider_scroll_changed()
                                                    static_cast<unsigned int>(m_moves_slider->GetHigherValue() - 1));
     m_canvas->set_as_dirty();
     m_canvas->request_extra_frame();
+}
+
+// Build the label for the horizontal G-code slider showing command number and legend-specific value
+std::string Preview::get_moves_slider_hover_label(int pos)
+{
+    if (!m_canvas || !m_moves_slider)
+        return "";
+
+    unsigned int vertex_index = m_moves_slider->GetValueAtPos(pos);
+    if (vertex_index == 0)
+        return "";
+
+    // Vertex index from slider is 1-based
+    const libvgcode::PathVertex &vertex = m_canvas->get_gcode_vertex_at(vertex_index - 1);
+    uint32_t gcode_id = vertex.gcode_id;
+
+    // Get view-type-specific description
+    libvgcode::EViewType view_type = m_canvas->get_gcode_view_type();
+    std::string description;
+    using namespace libvgcode;
+    switch (view_type)
+    {
+    case EViewType::FeatureType:
+        description = _u8L(gcode_extrusion_role_to_string(convert(vertex.role)));
+        break;
+    case EViewType::Height:
+    {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Height %.2f mm", vertex.height);
+        description = buf;
+        break;
+    }
+    case EViewType::Width:
+    {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Width %.2f mm", vertex.width);
+        description = buf;
+        break;
+    }
+    case EViewType::Speed:
+        description = "Speed " + std::to_string(static_cast<int>(vertex.feedrate)) + " mm/s";
+        break;
+    case EViewType::ActualSpeed:
+        description = "Actual speed " + std::to_string(static_cast<int>(vertex.actual_feedrate)) + " mm/s";
+        break;
+    case EViewType::FanSpeed:
+        description = "Fan " + std::to_string(static_cast<int>(vertex.fan_speed)) + "%";
+        break;
+    case EViewType::Temperature:
+        description = "Temp " + std::to_string(static_cast<int>(vertex.temperature)) +
+                      " \xC2\xB0"
+                      "C";
+        break;
+    case EViewType::VolumetricFlowRate:
+    {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Flow %.2f mm\xC2\xB3/s", vertex.volumetric_rate());
+        description = buf;
+        break;
+    }
+    case EViewType::ActualVolumetricFlowRate:
+    {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Actual flow %.2f mm\xC2\xB3/s", vertex.actual_volumetric_rate());
+        description = buf;
+        break;
+    }
+    case EViewType::Tool:
+        description = "Extruder " + std::to_string(vertex.extruder_id + 1);
+        break;
+    case EViewType::ColorPrint:
+        description = "Color " + std::to_string(vertex.color_id + 1);
+        break;
+    case EViewType::LayerTimeLinear:
+    case EViewType::LayerTimeLogarithmic:
+    {
+        uint32_t layer_id = vertex.layer_id;
+        if (layer_id < m_cached_layer_times.size())
+        {
+            float time_s = m_cached_layer_times[layer_id];
+            if (time_s > 0.0f)
+            {
+                int hours = static_cast<int>(time_s / 3600.0f);
+                int minutes = (static_cast<int>(time_s) % 3600) / 60;
+                int seconds = static_cast<int>(time_s) % 60;
+                if (hours > 0)
+                    description = "Layer time " + std::to_string(hours) + "h " + std::to_string(minutes) + "m " +
+                                  std::to_string(seconds) + "s";
+                else if (minutes > 0)
+                    description = "Layer time " + std::to_string(minutes) + "m " + std::to_string(seconds) + "s";
+                else
+                    description = "Layer time " + std::to_string(seconds) + "s";
+            }
+        }
+        break;
+    }
+    default:
+        break;
+    }
+
+    // Format: "10455 - External Perimeter"
+    std::string label = std::to_string(gcode_id);
+    if (!description.empty())
+        label += " - " + description;
+    return label;
 }
 
 } // namespace GUI

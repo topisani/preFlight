@@ -655,7 +655,10 @@ ExPolygon elephant_foot_compensation(const ExPolygon &input_expoly, double min_c
     else
     {
         EdgeGrid::Grid grid;
-        ExPolygon simplified = input_expoly.simplify(SCALED_EPSILON).front();
+        // Guard against empty result from simplify() - degenerate input polygons
+        // (e.g., extremely elongated shapes) can simplify to nothing.
+        ExPolygons simplified_vec = input_expoly.simplify(SCALED_EPSILON);
+        ExPolygon simplified = simplified_vec.empty() ? input_expoly : simplified_vec.front();
         assert(validate_expoly_orientation(simplified));
         BoundingBox bbox = get_extents(simplified.contour);
         bbox.offset(SCALED_EPSILON);

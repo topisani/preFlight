@@ -27,7 +27,7 @@ BeadingStrategyPtr BeadingStrategyFactory::makeStrategy(
     const double wall_split_middle_threshold, const double wall_add_middle_threshold, const coord_t max_bead_count,
     const coord_t outer_wall_offset, const int inward_distributed_center_wall_count,
     const coord_t ext_to_first_internal_spacing, const coord_t innermost_spacing, const coord_t actual_bead_count,
-    const int layer_id) // For debug output
+    const int layer_id, const coord_t thin_wall_snap_precision)
 {
     // Handle a special case when there is just one external perimeter.
     const coord_t use_spacing = max_bead_count <= 2 ? ext_perimeter_spacing : perimeter_spacing;
@@ -68,7 +68,8 @@ BeadingStrategyPtr BeadingStrategyFactory::makeStrategy(
     {
         BOOST_LOG_TRIVIAL(trace) << "Applying Widening Beading meta-strategy: min_input=" << min_feature_size
                                  << ", min_output=" << min_bead_width;
-        ret = std::make_unique<WideningBeadingStrategy>(std::move(ret), min_feature_size, min_bead_width);
+        ret = std::make_unique<WideningBeadingStrategy>(std::move(ret), min_feature_size, min_bead_width,
+                                                        thin_wall_snap_precision);
     }
 
     if (outer_wall_offset > 0)

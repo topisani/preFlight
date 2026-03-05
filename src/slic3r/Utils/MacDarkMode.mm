@@ -264,6 +264,24 @@ void mac_safe_destroy_children(wxWindow *window)
     }
 }
 
+void mac_safe_detach_native_view(wxWindow *window)
+{
+    if (!window)
+        return;
+    WXWidget handle = window->GetHandle();
+    if (!handle)
+        return;
+    NSView *view = (__bridge NSView *)handle;
+    @try
+    {
+        [view removeFromSuperview];
+    }
+    @catch (NSException *)
+    {
+        // Superview already deallocated or in an inconsistent state during shutdown.
+    }
+}
+
 }
 }
 

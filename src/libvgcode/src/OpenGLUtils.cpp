@@ -110,7 +110,12 @@ bool OpenGLWrapper::load_opengl(const std::string &context_version)
     s_valid_context = major > 3 || (major == 3 && minor >= 0);
     const int glad_res = gladLoaderLoadGLES2();
 #else
+#if defined(__linux__) && defined(__aarch64__)
+    // RPi 5 V3D GPU reports OpenGL 3.1 but supports the 3.2 extensions preFlight uses
+    s_valid_context = major > 3 || (major == 3 && minor >= 1);
+#else
     s_valid_context = major > 3 || (major == 3 && minor >= 2);
+#endif
     const int glad_res = gladLoaderLoadGL();
 #endif // ENABLE_OPENGL_ES
 

@@ -102,9 +102,11 @@ class Preview : public wxPanel
     bool m_keep_current_preview_type{false};
 
     bool m_loaded{false};
+    int m_last_layer_pos{-1}; // Layer position to restore after reslice (-1 = no restore)
 
     std::unique_ptr<DoubleSlider::DSForLayers> m_layers_slider{nullptr};
     std::unique_ptr<DoubleSlider::DSForGcode> m_moves_slider{nullptr};
+    std::vector<float> m_cached_layer_times;
 
 public:
     enum class OptionType : unsigned int
@@ -188,6 +190,7 @@ private:
 
     void on_layers_slider_scroll_changed();
     void on_moves_slider_scroll_changed();
+    std::string get_moves_slider_hover_label(int pos);
 };
 
 } // namespace GUI

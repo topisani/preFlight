@@ -119,7 +119,11 @@ bool GLGizmoMmuSegmentation::on_init()
     m_desc["first_color"] = _u8L("First color");
     m_desc["second_color_caption"] = _u8L("Right mouse button") + ": ";
     m_desc["second_color"] = _u8L("Second color");
+#ifdef __APPLE__
+    m_desc["remove_caption"] = _u8L("Cmd + Left mouse button") + ": ";
+#else
     m_desc["remove_caption"] = _u8L("Ctrl + Left mouse button") + ": ";
+#endif
     m_desc["remove"] = _u8L("Remove painted color");
 
     m_desc["alt_caption"] = _u8L("Alt + Mouse wheel") + ": ";

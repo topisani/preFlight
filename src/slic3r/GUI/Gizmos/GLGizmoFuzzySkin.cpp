@@ -48,7 +48,11 @@ bool GLGizmoFuzzySkin::on_init()
     m_desc["add_fuzzy_skin"] = _u8L("Add fuzzy skin");
     m_desc["remove_fuzzy_skin_caption"] = _u8L("Shift + Left mouse button") + ": ";
     m_desc["remove_fuzzy_skin"] = _u8L("Remove fuzzy skin");
+#ifdef __APPLE__
+    m_desc["draw_fuzzy_skin_caption"] = _u8L("Cmd + Left mouse button") + ": ";
+#else
     m_desc["draw_fuzzy_skin_caption"] = _u8L("Ctrl + Left mouse button") + ": ";
+#endif
     m_desc["draw_fuzzy_skin"] = _u8L("Draw line");
     m_desc["remove_all"] = _u8L("Remove all selection");
     m_desc["circle"] = _u8L("Circle");

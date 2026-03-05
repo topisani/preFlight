@@ -178,6 +178,14 @@ std::string OrcaKeyMapper::transform_ensure_vertical_shell(const std::string &va
     return "disabled";
 }
 
+std::string OrcaKeyMapper::transform_arc_fitting(const std::string &value)
+{
+    // Orca: bool "1"/"0" -> preFlight: enum "emit_center"/"disabled"
+    if (value == "1" || value == "true")
+        return "emit_center";
+    return "disabled";
+}
+
 // -----------------------------------------------------------------------
 // Helper macros for building mapping tables concisely
 // -----------------------------------------------------------------------
@@ -426,7 +434,10 @@ void OrcaKeyMapper::build_filament_mappings()
         RENAMED("filament_retraction_minimum_travel", "filament_retract_before_travel"),
         RENAMED("filament_wipe_distance", "filament_wipe_length"),
         RENAMED("default_filament_colour", "filament_colour"),
-        RENAMED("filament_shrink", "filament_shrinkage_compensation_x"),
+        // Shrinkage compensation is handled specially in the importer (value conversion + one-to-many mapping).
+        // Orca uses 100% = no shrinkage; preFlight uses 0% = no compensation. Conversion: pf = 100 - orca.
+        // filament_shrink (Orca XY) maps to both _x and _y in preFlight.
+        ORCA_ONLY("filament_shrink"),
 
         // Bed temperature keys are handled specially in the importer (lossy mapping).
         // Register them as OrcaOnly here so they go into the "dropped" bucket by default;
@@ -553,8 +564,9 @@ void OrcaKeyMapper::build_process_mappings()
         RENAMED("support_on_build_plate_only", "support_material_buildplate_only"),
         RENAMED("support_base_pattern", "support_material_pattern"),
         RENAMED("support_interface_pattern", "support_material_interface_pattern"),
-        RENAMED("support_top_z_distance", "support_material_contact_distance"),
-        RENAMED("support_bottom_z_distance", "support_material_bottom_contact_distance"),
+        // Support Z distances are handled specially in the importer (float mm -> enum conversion).
+        ORCA_ONLY("support_top_z_distance"),
+        ORCA_ONLY("support_bottom_z_distance"),
         RENAMED("support_interface_top_layers", "support_material_interface_layers"),
         RENAMED("support_interface_bottom_layers", "support_material_bottom_interface_layers"),
         RENAMED("support_object_xy_distance", "support_material_xy_spacing"),
@@ -565,10 +577,11 @@ void OrcaKeyMapper::build_process_mappings()
         RENAMED("prime_tower_width", "wipe_tower_width"),
         RENAMED("prime_tower_brim_width", "wipe_tower_brim_width"),
         RENAMED("flush_into_infill", "wipe_into_infill"),
-        RENAMED("flush_into_support", "wipe_into_objects"),
+        // No preFlight equivalent: flush_into_support (purge into supports) != wipe_into_objects (purge into print)
+        ORCA_ONLY("flush_into_support"),
         RENAMED("xy_contour_compensation", "xy_size_compensation"),
         RENAMED("reduce_infill_retraction", "only_retract_when_crossing_perimeters"),
-        RENAMED("enable_arc_fitting", "arc_fitting"),
+        XFORM("enable_arc_fitting", "arc_fitting", transform_arc_fitting),
         RENAMED("spiral_mode", "spiral_vase"),
         RENAMED("enable_overhang_speed", "enable_dynamic_overhang_speeds"),
         RENAMED("bridge_flow", "bridge_flow_ratio"),
@@ -592,8 +605,9 @@ void OrcaKeyMapper::build_process_mappings()
         // Tree support renamed keys
         RENAMED("tree_support_branch_angle", "support_tree_angle"),
         RENAMED("tree_support_branch_diameter", "support_tree_branch_diameter"),
-        RENAMED("tree_support_branch_distance", "support_tree_top_rate"),
-        RENAMED("tree_support_wall_count", "support_tree_tip_diameter"),
+        // No preFlight equivalent: branch_distance (mm) != top_rate (% density), wall_count (int) != tip_diameter (mm)
+        ORCA_ONLY("tree_support_branch_distance"),
+        ORCA_ONLY("tree_support_wall_count"),
 
         // Transformed mappings
         XFORM("sparse_infill_pattern", "fill_pattern", transform_infill_pattern),

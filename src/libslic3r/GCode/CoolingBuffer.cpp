@@ -486,8 +486,14 @@ struct CoolingLine
 };
 
 // Deferred definitions — need CoolingLine::Type enum.
-inline bool GCodeMoveSegment::is_arc() const { return (type & CoolingLine::TYPE_G2G3) != 0; }
-inline bool GCodeMoveSegment::is_ccw() const { return (type & CoolingLine::TYPE_G2G3_CCW) != 0; }
+inline bool GCodeMoveSegment::is_arc() const
+{
+    return (type & CoolingLine::TYPE_G2G3) != 0;
+}
+inline bool GCodeMoveSegment::is_ccw() const
+{
+    return (type & CoolingLine::TYPE_G2G3_CCW) != 0;
+}
 
 std::string emit_feedrate(const float feedrate)
 {
@@ -1290,6 +1296,11 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
             line.adjustable_time = 0.f;
             line.adjustable_time_max = 0.f;
         }
+        // Check RESET before SET because ";_RESET_FAN_SPEED" contains ";_SET_FAN_SPEED" as a substring
+        else if (boost::contains(sline, ";_RESET_FAN_SPEED"))
+        {
+            line.type |= CoolingLine::TYPE_RESET_FAN_SPEED;
+        }
         else if (boost::contains(sline, ";_SET_FAN_SPEED"))
         {
             auto speed_start = sline.find_last_of('D');
@@ -1301,10 +1312,6 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
 
             line.fan_speed = speed;
             line.type |= CoolingLine::TYPE_SET_FAN_SPEED;
-        }
-        else if (boost::contains(sline, ";_RESET_FAN_SPEED"))
-        {
-            line.type |= CoolingLine::TYPE_RESET_FAN_SPEED;
         }
 
         if (line.type != 0)
@@ -1744,15 +1751,17 @@ std::string CoolingBuffer::apply_layer_cooldown(
                                                         requested_fan_speed_limits.max_speed);
         if (requested_fan_speed >= 0)
         {
-            if (!cooling_enabled)
+            bool manual_fan_enabled = m_config.enable_manual_fan_speeds.get_at(m_current_extruder);
+            if (manual_fan_enabled || !cooling_enabled)
             {
-                // Manual fan control mode - only apply disable_fan_first_layers limit
+                // Manual fan controls enabled or auto-cooling disabled:
+                // Use the requested speed directly, only respecting disable_fan_first_layers
                 int manual_max = (int(layer_id) >= disable_fan_first_layers) ? 100 : 0;
                 fan_speed_new = std::clamp(requested_fan_speed, 0, manual_max);
             }
             else
             {
-                // Auto cooling mode - apply all limits including layer ramping
+                // Auto cooling with dynamic overhang speeds: apply all limits including layer ramping
                 fan_speed_new = std::clamp(requested_fan_speed, requested_fan_speed_limits.min_speed,
                                            requested_fan_speed_limits.max_speed);
             }
@@ -1769,7 +1778,23 @@ std::string CoolingBuffer::apply_layer_cooldown(
     const char *pos = gcode.c_str();
     int current_feedrate = 0;
 
+    // Compute baseline fan speed, bridge_fan_control, and bridge_fan_speed for this layer.
+    // When manual fan controls are active AND past disable_fan_first_layers, suppress the
+    // M106 emission - per-feature _SET_FAN_SPEED markers will set fan speed instead.
+    // For first N layers, we still emit M106 S0 to ensure fan is off.
+    bool manual_fan_active = m_config.enable_manual_fan_speeds.get_at(m_current_extruder);
+    int disable_first = m_config.disable_fan_first_layers.get_at(m_current_extruder);
+    // Mirror the bump logic inside change_extruder_set_fan so our threshold matches
+    if (disable_first <= 0 && m_config.full_fan_speed_layer.get_at(m_current_extruder) > 0)
+        disable_first = 1;
+    size_t gcode_before = new_gcode.size();
     change_extruder_set_fan();
+    if (manual_fan_active && int(layer_id) >= disable_first)
+    {
+        // Undo the M106 emission; bridge_fan_control/bridge_fan_speed are already computed.
+        new_gcode.resize(gcode_before);
+        emitted_fan_speed = m_fan_speed;
+    }
 
     const CoolingLine *line_waiting_for_split = nullptr;
 
@@ -1850,12 +1875,12 @@ std::string CoolingBuffer::apply_layer_cooldown(
 
                         if (segment_it != line_waiting_for_split->move_segments.cend())
                         {
-                            new_gcode.append(emit_feedrate(line_waiting_for_split->feedrate_original));
+                            inject_feedrate(new_gcode, emit_feedrate(line_waiting_for_split->feedrate_original));
                         }
                     }
                     else if (split_at_length <= SEGMENT_SPLIT_EPSILON)
                     {
-                        new_gcode.append(emit_feedrate(line_waiting_for_split->feedrate_original));
+                        inject_feedrate(new_gcode, emit_feedrate(line_waiting_for_split->feedrate_original));
                         const char *seg_start = gcode.c_str() + segment_it->line_start;
                         const char *seg_end = gcode.c_str() + segment_it->line_end;
                         new_gcode.append(seg_start, seg_end - seg_start);
@@ -1871,7 +1896,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
                         new_gcode += segment_parts.first;
 
                         // Change the feedrate for the second part.
-                        new_gcode.append(emit_feedrate(line_waiting_for_split->feedrate_original));
+                        inject_feedrate(new_gcode, emit_feedrate(line_waiting_for_split->feedrate_original));
 
                         new_gcode += segment_parts.second;
 
@@ -1957,8 +1982,8 @@ std::string CoolingBuffer::apply_layer_cooldown(
                                 gap_start_pos + line_offset, gap_start_pos + (gap_ptr - pos),
                                 0.0f, // No XY length
                                 0.0f, // No feedrate for retract
-                                retract_time, FanRampMoveType::Retract, last_x, last_y, last_x,
-                                last_y, track_e // Position unchanged
+                                retract_time, FanRampMoveType::Retract, last_x, last_y, last_x, last_y,
+                                track_e // Position unchanged
                             });
                         }
                     }
@@ -1977,8 +2002,8 @@ std::string CoolingBuffer::apply_layer_cooldown(
                                 gap_start_pos + line_offset, gap_start_pos + (gap_ptr - pos),
                                 0.0f, // No XY length
                                 0.0f, // No feedrate for unretract
-                                unretract_time, FanRampMoveType::Unretract, last_x, last_y, last_x,
-                                last_y, track_e // Position unchanged
+                                unretract_time, FanRampMoveType::Unretract, last_x, last_y, last_x, last_y,
+                                track_e // Position unchanged
                             });
                         }
                     }
@@ -2254,6 +2279,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
                             fan_cmd += comment_buf;
                             std::string segment_first_part;
                             std::string segment_second_part;
+                            std::string feedrate_for_split;
 
                             // If we need to split the segment, generate the two parts
                             if (need_segment_split && split_move.length > 1.0f)
@@ -2290,14 +2316,14 @@ std::string CoolingBuffer::apply_layer_cooldown(
                                 }
 
                                 // Generate first part (from start to split point)
-                                // Feedrate on separate line only if different from current
+                                // Feedrate handled separately via inject_feedrate at emission point
                                 char buf[256];
                                 segment_first_part.clear();
 
                                 if (int(orig_f) != current_feedrate)
                                 {
                                     snprintf(buf, sizeof(buf), "G1 F%.0f\n", orig_f);
-                                    segment_first_part = buf;
+                                    feedrate_for_split = buf;
                                 }
 
                                 if (has_e)
@@ -2358,9 +2384,11 @@ std::string CoolingBuffer::apply_layer_cooldown(
                                 if (line_end != std::string::npos)
                                     new_gcode_modified.append(new_gcode, line_end + 1, std::string::npos);
                             }
-                            else if (need_segment_split && !segment_first_part.empty())
+                            else if (need_segment_split && (!segment_first_part.empty() || !feedrate_for_split.empty()))
                             {
-                                // Split a G1 move: first_part + M106 + second_part
+                                // Split a G1 move: feedrate + first_part + M106 + second_part
+                                if (!feedrate_for_split.empty())
+                                    inject_feedrate(new_gcode_modified, feedrate_for_split);
                                 new_gcode_modified += segment_first_part;
                                 new_gcode_modified += fan_cmd;
                                 new_gcode_modified += segment_second_part;
@@ -2454,11 +2482,23 @@ std::string CoolingBuffer::apply_layer_cooldown(
                 {
                     // Feedrate does not change and this line does not move the print head. Skip the complete G-code line including the G-code comment.
                     end = line_end;
-                    // DEBUG removed - was showing skipped lines
                 }
                 else
                     // Remove the feedrate from the G0/G1 line. The G-code line may become empty!
                     remove = true;
+            }
+            else if ((line->type & (CoolingLine::TYPE_ADJUSTABLE | CoolingLine::TYPE_ADJUSTABLE_EMPTY |
+                                    CoolingLine::TYPE_EXTERNAL_PERIMETER | CoolingLine::TYPE_FIRST_INTERNAL_PERIMETER |
+                                    CoolingLine::TYPE_WIPE)) ||
+                     line->length() == 0.)
+            {
+                // preFlight: Different feedrate, standalone F-only line (no movement).
+                // Use inject_feedrate to remove any prior redundant standalone F lines.
+                char buf[64];
+                sprintf(buf, "G1 F%d\n", new_feedrate);
+                inject_feedrate(new_gcode, std::string(buf));
+                current_feedrate = new_feedrate;
+                end = line_end;
             }
             else if (line->slowdown)
             {
@@ -2683,6 +2723,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
 
     // There should be no empty G1 lines emitted.
     assert(new_gcode.find("G1\n") == std::string::npos);
+
     return new_gcode;
 }
 

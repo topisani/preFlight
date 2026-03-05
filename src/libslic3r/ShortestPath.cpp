@@ -1214,6 +1214,10 @@ std::vector<std::pair<size_t, bool>> chain_segments_greedy2(SegmentEndPointFunc 
                                                                                        start_near);
 }
 
+// Forward declaration - defined after FlipEdge (which is at ~line 1576)
+static void improve_extrusion_entity_ordering(const std::vector<ExtrusionEntity *> &entities,
+                                              std::vector<std::pair<size_t, bool>> &chain);
+
 std::vector<std::pair<size_t, bool>> chain_extrusion_entities(const std::vector<ExtrusionEntity *> &entities,
                                                               const Point *start_near, const bool reversed)
 {
@@ -1241,6 +1245,9 @@ std::vector<std::pair<size_t, bool>> chain_extrusion_entities(const std::vector<
         // Is can_reverse() respected by the reversals?
         assert(ee->can_reverse() || !segment.second);
     }
+
+    improve_extrusion_entity_ordering(entities, out);
+
     return out;
 }
 
@@ -1865,7 +1872,7 @@ static inline void reorder_by_two_exchanges_with_segment_flipping(std::vector<Fl
     std::vector<FlipEdge> edges_tmp(edges);
     std::vector<std::pair<double, size_t>> connection_lengths(edges.size() - 1, std::pair<double, size_t>(0., 0));
     std::vector<char> connection_tried(edges.size(), false);
-    const size_t max_iterations = std::min(edges.size(), size_t(100));
+    const size_t max_iterations = std::min(edges.size(), size_t(500));
     for (size_t iter = 0; iter < max_iterations; ++iter)
     {
         // Initialize connection costs and connection lengths.
@@ -1944,6 +1951,37 @@ static inline void reorder_by_two_exchanges_with_segment_flipping(std::vector<Fl
             break;
         }
     }
+}
+
+// 2-opt refinement for extrusion entity chains. Fixes crossing paths from greedy nearest-neighbor.
+static void improve_extrusion_entity_ordering(const std::vector<ExtrusionEntity *> &entities,
+                                              std::vector<std::pair<size_t, bool>> &chain)
+{
+    if (chain.size() < 3)
+        return;
+
+    std::vector<FlipEdge> edges;
+    edges.reserve(chain.size());
+    for (size_t i = 0; i < chain.size(); ++i)
+    {
+        const auto &[idx, rev] = chain[i];
+        Vec2d p1 = (rev ? entities[idx]->last_point() : entities[idx]->first_point()).cast<double>();
+        Vec2d p2 = (rev ? entities[idx]->first_point() : entities[idx]->last_point()).cast<double>();
+        edges.emplace_back(p1, p2, i);
+    }
+    reorder_by_two_exchanges_with_segment_flipping(edges);
+
+    std::vector<std::pair<size_t, bool>> improved;
+    improved.reserve(chain.size());
+    for (const FlipEdge &edge : edges)
+    {
+        auto [orig_idx, orig_rev] = chain[edge.source_index];
+        Vec2d original_p1 =
+            (orig_rev ? entities[orig_idx]->last_point() : entities[orig_idx]->first_point()).cast<double>();
+        bool flipped_by_2opt = (edge.p1 != original_p1);
+        improved.emplace_back(orig_idx, flipped_by_2opt ? !orig_rev : orig_rev);
+    }
+    chain = std::move(improved);
 }
 
 #if 0
@@ -2291,10 +2329,9 @@ Polylines chain_polylines(Polylines &&polylines, const Point *start_near)
             if (segment_and_reversal.second)
                 out.back().reverse();
         }
-        if (out.size() > 1 && start_near == nullptr)
+        if (out.size() > 1)
         {
             improve_ordering_by_two_exchanges_with_segment_flipping(out, start_near != nullptr);
-            //improve_ordering_by_segment_flipping(out, start_near != nullptr);
         }
     }
 
@@ -2302,6 +2339,60 @@ Polylines chain_polylines(Polylines &&polylines, const Point *start_near)
     svg_draw_polyline_chain("chain_polylines-final", iRun, out);
 #endif /* DEBUG_SVG_OUTPUT */
     return out;
+}
+
+// Like chain_polylines but also returns the original index for each output polyline,
+// enabling callers to reorder parallel metadata (e.g., per-polyline flow tags).
+std::pair<Polylines, std::vector<size_t>> chain_polylines_with_indices(Polylines &&polylines, const Point *start_near)
+{
+    Polylines out;
+    std::vector<size_t> index_map;
+    if (!polylines.empty())
+    {
+        auto segment_end_point = [&polylines](size_t idx, bool first_point) -> const Point &
+        {
+            return first_point ? polylines[idx].first_point() : polylines[idx].last_point();
+        };
+        std::vector<std::pair<size_t, bool>> ordered =
+            chain_segments_greedy2<Point, decltype(segment_end_point)>(segment_end_point, polylines.size(), start_near);
+        out.reserve(polylines.size());
+        index_map.reserve(polylines.size());
+        for (auto &[idx, rev] : ordered)
+        {
+            index_map.push_back(idx);
+            out.emplace_back(std::move(polylines[idx]));
+            if (rev)
+                out.back().reverse();
+        }
+        if (out.size() > 1)
+        {
+            // 2-opt operates in-place on 'out', reordering elements.
+            // We must apply the same permutation to index_map.
+            // Build FlipEdge list with source_index tracking, run 2-opt, then reconstruct.
+            std::vector<FlipEdge> edges;
+            edges.reserve(out.size());
+            for (size_t i = 0; i < out.size(); ++i)
+                edges.emplace_back(out[i].first_point().cast<double>(), out[i].last_point().cast<double>(), i);
+            reorder_by_two_exchanges_with_segment_flipping(edges);
+
+            Polylines reordered_out;
+            std::vector<size_t> reordered_map;
+            reordered_out.reserve(out.size());
+            reordered_map.reserve(out.size());
+            for (const FlipEdge &edge : edges)
+            {
+                size_t src = edge.source_index;
+                reordered_map.push_back(index_map[src]);
+                reordered_out.emplace_back(std::move(out[src]));
+                // Check if 2-opt flipped this edge by comparing endpoints
+                if (edge.p1 != reordered_out.back().first_point().cast<double>())
+                    reordered_out.back().reverse();
+            }
+            out = std::move(reordered_out);
+            index_map = std::move(reordered_map);
+        }
+    }
+    return {std::move(out), std::move(index_map)};
 }
 
 template<class T>
@@ -2425,7 +2516,7 @@ std::vector<size_t> chain_layer_islands(const std::vector<std::reference_wrapper
     ordering_points.reserve(islands.size());
     for (const LayerIsland &island : islands)
     {
-        ordering_points.push_back(island.boundary.contour.first_point());
+        ordering_points.push_back(island.boundary.contour.centroid());
     }
 
     return chain_points(ordering_points, start_near);

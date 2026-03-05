@@ -1026,10 +1026,9 @@ void GCodeProcessor::apply_config(const PrintConfig &config)
         m_firmware_retraction.unretract_feedrate = (deretract > 0.0f) ? deretract
                                                                       : m_firmware_retraction.retract_feedrate;
     }
-    if (!config.retract_lift.values.empty())
-    {
-        m_firmware_retraction.retract_zlift = static_cast<float>(config.retract_lift.get_at(0));
-    }
+    // Don't set retract_zlift from config. The slicer handles Z-lift via explicit G1 Z
+    // moves, so process_G10/G11 should not apply its own internal Z-lift on top of that.
+    // retract_zlift is only set by M207 Z commands in the gcode (firmware-handled Z-lift).
     if (!config.retract_restart_extra.values.empty())
     {
         m_firmware_retraction.retract_restart_extra = static_cast<float>(config.retract_restart_extra.get_at(0));

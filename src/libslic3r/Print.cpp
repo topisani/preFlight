@@ -173,7 +173,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
                                                           "retract_restart_extra_toolchange",
                                                           "retract_speed",
                                                           "seam_gap_distance",
-                                                          "seam_notch",
+                                                          "seam_type",
                                                           "seam_notch_width",
                                                           "seam_notch_angle",
                                                           "single_extruder_multi_material_priming",
@@ -804,14 +804,9 @@ std::string Print::validate(std::vector<std::string> *warnings) const
                 }
                 if (this->has_wipe_tower() && object->config().support_material_style != smsOrganic)
                 {
-                    if (object->config().support_material_contact_distance == stcgNoGap)
-                    {
-                        // Soluble interface
-                        if (!object->config().support_material_synchronize_layers)
-                            return _u8L(
-                                "For the Wipe Tower to work with the soluble supports, the support layers need to be synchronized with the object layers.");
-                    }
-                    else
+                    // preFlight: Removed soluble-support synchronize_layers check.
+                    // preFlight always syncs sparse support layers to object layer heights.
+                    if (object->config().support_material_contact_distance != stcgNoGap)
                     {
                         // Non-soluble interface
                         if (object->config().support_material_extruder != 0 ||

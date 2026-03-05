@@ -104,6 +104,7 @@ public:
 
     void set_get_label_on_move_cb(std::function<std::string(int)> cb) { m_cb_get_label_on_move = cb; }
     void set_get_label_cb(std::function<std::string(int)> cb) { m_cb_get_label = cb; }
+    void set_label_font(ImFont *font) { m_label_font = font; }
     void set_draw_scroll_line_cb(std::function<void(const ImRect &, const ImRect &)> cb) { m_cb_draw_scroll_line = cb; }
     void set_extra_draw_cb(std::function<void(const ImRect &)> cb) { m_cb_extra_draw = cb; }
 
@@ -162,6 +163,7 @@ private:
     bool m_draw_lower_thumb{true};
     bool m_combine_thumbs{false};
     bool m_show_move_label{false};
+    ImFont *m_label_font{nullptr};
 
     DrawOptions m_draw_opts;
     Regions m_regions;
@@ -264,6 +266,10 @@ public:
     bool IsShown() { return m_ctrl.IsShown(); }
     void SetEmUnit(int em_unit) { m_em = em_unit; }
     void ShowLowerThumb(bool show) { m_ctrl.ShowLowerThumb(show); }
+    void ShowLabelOnMouseMove(bool show = true) { m_ctrl.ShowLabelOnMouseMove(show); }
+    void SetGetLabelOnMoveCb(std::function<std::string(int)> cb) { m_ctrl.set_get_label_on_move_cb(cb); }
+    void SetGetLabelCb(std::function<std::string(int)> cb) { m_ctrl.set_get_label_cb(cb); }
+    void SetLabelFont(ImFont *font) { m_ctrl.set_label_font(font); }
 
     float GetWidth() { return m_ctrl.GetCtrlSize().x; }
     float GetHeight() { return m_ctrl.GetCtrlSize().y; }

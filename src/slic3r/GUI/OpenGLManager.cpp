@@ -456,6 +456,9 @@ bool OpenGLManager::init_gl()
 
 #if SLIC3R_OPENGL_ES
         bool valid_version = s_gl_info.is_version_greater_or_equal_to(3, 0);
+#elif defined(__linux__) && defined(__aarch64__)
+        // RPi 5 V3D GPU reports OpenGL 3.1 but supports the 3.2 extensions preFlight uses
+        const bool valid_version = s_gl_info.is_version_greater_or_equal_to(3, 1);
 #else
         const bool valid_version = s_gl_info.is_version_greater_or_equal_to(3, 2);
 #endif // SLIC3R_OPENGL_ES
@@ -466,6 +469,10 @@ bool OpenGLManager::init_gl()
             wxString message = format_wxstr(
 #if SLIC3R_OPENGL_ES
                 _L("preFlight requires OpenGL ES 3.0 capable graphics driver to run correctly, \n"
+                   "while OpenGL version %s, renderer %s, vendor %s was detected."),
+                s_gl_info.get_version_string(), s_gl_info.get_renderer(), s_gl_info.get_vendor());
+#elif defined(__linux__) && defined(__aarch64__)
+                _L("preFlight requires OpenGL 3.1 capable graphics driver to run correctly,\n"
                    "while OpenGL version %s, renderer %s, vendor %s was detected."),
                 s_gl_info.get_version_string(), s_gl_info.get_renderer(), s_gl_info.get_vendor());
 #else

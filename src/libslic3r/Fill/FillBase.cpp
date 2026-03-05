@@ -226,12 +226,7 @@ std::pair<float, Point> Fill::_infill_direction(const Surface *surface) const
     else if (this->layer_id != size_t(-1))
     {
         // alternate fill direction
-        // Solid surface angles are now fully calculated in Fill.cpp's group_fills() based on
-        // distance from visible surface. Only apply _layer_angle for sparse infill.
-        if (!surface->is_solid())
-        {
-            out_angle += this->_layer_angle(this->layer_id / surface->thickness_layers);
-        }
+        out_angle += this->_layer_angle(this->layer_id / surface->thickness_layers);
     }
     else
     {

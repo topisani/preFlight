@@ -772,7 +772,11 @@ void OG_CustomCtrl::CtrlLine::render(wxDC &dc, wxCoord v_pos)
     }
 
     if (og_line.near_label_widget_win)
-        h_pos += og_line.near_label_widget_win->GetSize().x + ctrl->m_h_gap;
+    {
+        // Use actual widget right edge to prevent render/position path drift
+        h_pos = og_line.near_label_widget_win->GetPosition().x + og_line.near_label_widget_win->GetSize().x +
+                ctrl->m_h_gap;
+    }
 
     // Note: option_set already retrieved above in WIDGET-ONLY-LINE block
 
@@ -861,8 +865,11 @@ void OG_CustomCtrl::CtrlLine::render(wxDC &dc, wxCoord v_pos)
                         h_pos += child->GetWindow()->GetSize().x + ctrl->m_h_gap;
             }
             else if (field->getWindow())
-                h_pos += (opt.opt.width >= 0 ? opt.opt.width * ctrl->m_em_unit : field->getWindow()->GetSize().x) +
-                         ctrl->m_h_gap;
+            {
+                // Use actual widget right edge + gap to prevent render/position path drift
+                // from causing sidetext to be painted under the widget
+                h_pos = field->getWindow()->GetPosition().x + field->getWindow()->GetSize().x + ctrl->m_h_gap;
+            }
         }
 
         // add field

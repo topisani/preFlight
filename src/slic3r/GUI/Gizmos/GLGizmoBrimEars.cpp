@@ -93,8 +93,11 @@ bool GLGizmoBrimEars::on_init()
     m_new_point_head_diameter = get_brim_default_radius();
     m_shortcut_key = WXK_CONTROL_E;
 
-    // FIXME: maybe should be using GUI::shortkey_ctrl_prefix() or equivalent?
+#ifdef __APPLE__
+    const std::string ctrl = _u8L("Cmd+");
+#else
     const std::string ctrl = _u8L("Ctrl+");
+#endif
     // FIXME: maybe should be using GUI::shortkey_alt_prefix() or equivalent?
     const std::string alt = _u8L("Alt+");
 

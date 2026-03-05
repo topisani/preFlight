@@ -40,6 +40,9 @@
 #include "libslic3r/Polyline.hpp"
 #include "libslic3r/PrintBase.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/Surface.hpp"
+#include "libslic3r/Fill/FillConcentric.hpp"
+#include "libslic3r/PerimeterGenerator.hpp"
 
 #if defined(BRIM_DEBUG_TO_SVG)
 #include "SVG.hpp"
@@ -67,13 +70,21 @@ static void append_and_translate(Polygons &dst, const Polygons &src, const Print
 static float max_brim_width(const SpanOfConstPtrs<PrintObject> &objects)
 {
     assert(!objects.empty());
-    return float(std::accumulate(objects.begin(), objects.end(), 0.,
-                                 [](double partial_result, const PrintObject *object)
-                                 {
-                                     return std::max(partial_result, object->config().brim_type == btNoBrim
-                                                                         ? 0.
-                                                                         : object->config().brim_width.value);
-                                 }));
+    float result = 0.f;
+    for (const PrintObject *object : objects)
+    {
+        // Painted mouse ears use per-point radius, not brim_width
+        if (object->config().brim_type == btPainted)
+        {
+            for (const auto &pt : object->model_object()->brim_points)
+                result = std::max(result, pt.head_front_radius);
+        }
+        else
+        {
+            result = std::max(result, (float) object->config().brim_width.value);
+        }
+    }
+    return result;
 }
 
 // Generate mouse ears at sharp corners
@@ -132,8 +143,7 @@ static ExPolygons make_brim_ears(ExPolygons &obj_expoly, coord_t size_ear, coord
 
 struct PaintedEarResult
 {
-    ExPolygons standard_ears; // Ears clipped normally (for <= 0% overlap)
-    ExPolygons overlap_ears;  // Ears with positive overlap (uncliped)
+    ExPolygons ears; // All painted ears, each individually clipped at its own overlap level
 };
 
 static PaintedEarResult make_brim_ears_painted(const PrintObject *object, const Print &print, float brim_separation,
@@ -144,9 +154,7 @@ static PaintedEarResult make_brim_ears_painted(const PrintObject *object, const 
     const BrimPoints &brim_ear_points = object->model_object()->brim_points;
 
     if (brim_ear_points.empty())
-    {
         return result;
-    }
 
     const Geometry::Transformation &trsf = object->model_object()->instances[0]->get_transformation();
     Transform3d model_trsf = trsf.get_matrix_no_offset();
@@ -155,8 +163,6 @@ static PaintedEarResult make_brim_ears_painted(const PrintObject *object, const 
         Vec3d(-unscale<double>(center_offset.x()), -unscale<double>(center_offset.y()), 0));
 
     const Flow flow = print.brim_flow();
-    const double flowWidth = flow.spacing();
-    const float scaled_flow_spacing = flow.scaled_spacing();
 
     // Use the actual calculated width from first layer external perimeter
     float external_perimeter_width = flow.width(); // Default fallback
@@ -166,106 +172,26 @@ static PaintedEarResult make_brim_ears_painted(const PrintObject *object, const 
         external_perimeter_width = object->layers().front()->regions().front()->flow(frExternalPerimeter).width();
     }
 
-    // Returns the hole polygon if ear is inside a hole, nullptr otherwise
-    auto find_containing_hole = [&bottom_layer_expolygons](const Point &ear_center) -> const Polygon *
-    {
-        // The ear_center is already in object-local coordinates (via model_trsf)
-        // The bottom_layer_expolygons are also in object-local coordinates
-        // So we can check directly without any instance transforms
-        for (const ExPolygon &expoly : bottom_layer_expolygons)
-        {
-            // First check if point is inside the outer contour
-            if (expoly.contour.contains(ear_center))
-            {
-                // Now check if it's inside any hole
-                for (const Polygon &hole : expoly.holes)
-                {
-                    if (hole.points.empty())
-                        continue;
-
-                    BoundingBox hole_bbox(hole.points);
-                    // Check if point is in bounding box first (quick reject)
-                    if (!hole_bbox.contains(ear_center))
-                        continue;
-
-                    // Use Clipper2's point-in-polygon (handles CW/CCW correctly)
-                    Clipper2Lib::Path64 hole_path = Slic3rPoints_to_ClipperPath(hole.points);
-                    Clipper2Lib::Point64 ear_pt(ear_center.x(), ear_center.y());
-                    Clipper2Lib::PointInPolygonResult pip_result = Clipper2Lib::PointInPolygon(ear_pt, hole_path);
-                    int pip_result_int = (pip_result == Clipper2Lib::PointInPolygonResult::IsInside) ? 1
-                                         : (pip_result == Clipper2Lib::PointInPolygonResult::IsOn)   ? -1
-                                                                                                     : 0;
-
-                    // WORKAROUND: If in bbox but PointInPolygon=0, use bbox with margin as fallback
-                    // This handles cases where highly tessellated holes cause PointInPolygon to fail
-                    if (pip_result_int == 0)
-                    {
-                        // Shrink bbox by small margin (1mm) and check again
-                        BoundingBox shrunk_bbox = hole_bbox;
-                        shrunk_bbox.min += Point(scale_(1.0), scale_(1.0));
-                        shrunk_bbox.max -= Point(scale_(1.0), scale_(1.0));
-                        if (shrunk_bbox.contains(ear_center))
-                            return &hole;
-                    }
-                    else
-                    {
-                        // pip_result: 1 = inside, -1 = on boundary
-                        return &hole; // Found it - ear is inside this hole
-                    }
-                }
-            }
-        }
-        return nullptr; // Not inside any hole
-    };
-
     // Create ears at each manually-placed point
-    for (const auto &pt : brim_ear_points)
+    for (size_t ear_i = 0; ear_i < brim_ear_points.size(); ++ear_i)
     {
+        const auto &pt = brim_ear_points[ear_i];
         Vec3f world_pos = pt.transform(trsf.get_matrix());
         if (world_pos.z() > 0.01f)
             continue; // Skip points not on first layer
 
-        // The default behavior (0%) already includes some overlap (~20% of perimeter width)
-        // So we need to adjust relative to that default:
-        //   0% = default overlap behavior (already overlaps ~20%)
-        //   +100% = add one full perimeter width MORE overlap
-        //   -100% = reduce overlap by one full perimeter width (may create gap)
-        //
-        // The default overlap appears to be approximately 0.2 * external_perimeter_width
-        // based on visual inspection. So at 0%, we want overlap_distance = 0 (no change from default)
         float overlap_distance = scale_((pt.overlap_percent / 100.0f) * external_perimeter_width);
-
-        // For clipping, we need the model perimeter offset by the overlap distance
-        // Positive overlap = negative offset (INTO the model)
-        // Negative overlap = positive offset (AWAY from model)
         float clip_offset = -overlap_distance;
-
-        // Calculate half perimeter width for clipping calculation
         float half_perimeter_width = external_perimeter_width / 2.0f;
 
-        // Get the original model contour (need to reverse the brim_separation offset from outer_brim_expoly)
-        // outer_brim_expoly = model + brim_separation
-        // So: model = outer_brim_expoly - brim_separation
         Polygons model_contour = offset(to_polygons(outer_brim_expoly), -brim_separation, JoinType::Square);
-
-        // For true 0% overlap, the brim should touch the external perimeter exactly
-        // The external perimeter's outer edge is at: model + (external_perimeter_width / 2)
-        // So for 0% overlap, we need to clip at this position
-
-        // Calculate where the external perimeter's outer edge actually is
         Polygons external_perimeter_outer_edge = offset(model_contour, scale_(half_perimeter_width), JoinType::Square);
-
-        // Now apply the user's overlap adjustment
-        // At 0%, we clip at the external perimeter's outer edge (no overlap)
-        // Positive values move the clip boundary inward (creating overlap)
-        // Negative values move the clip boundary outward (creating a gap)
         Polygons contour_for_this_ear = offset(external_perimeter_outer_edge, clip_offset, JoinType::Square);
 
-        // Create full circular ear at user-specified diameter (head_front_radius is in mm)
+        // Create full circular ear at user-specified diameter
         float ear_radius_mm = pt.head_front_radius;
         coord_t ear_radius_scaled = scale_(ear_radius_mm);
 
-        // Create circular ear pattern
         Polygon point_round;
         for (size_t i = 0; i < POLY_SIDE_COUNT; i++)
         {
@@ -287,81 +213,47 @@ static PaintedEarResult make_brim_ears_painted(const PrintObject *object, const 
         {
             for (const Polygon &hole : expoly.holes)
             {
-                // Check if circle intersects this hole
                 Polygons hole_intersection = intersection(circle_as_polygons, Polygons{hole});
                 if (hole_intersection.empty())
-                    continue; // No intersection with this hole
+                    continue;
 
-                // This ear intersects THIS HOLE - generate inner brim logic
-                // Create the brim zone by shrinking the hole
                 Polygons hole_brim_boundary = offset(hole, -brim_separation, JoinType::Square);
-
                 if (hole_brim_boundary.empty())
-                    continue; // Hole too small, skip this hole
+                    continue;
 
                 if (pt.overlap_percent > 0)
                 {
-                    // Positive overlap: ear can extend into the hole wall
-                    // For a hole, the perimeter is printed ON the hole boundary
-                    // Perimeter inner edge (toward center, where brim touches) = hole + half_perimeter
-                    // At 0% overlap: clip at perimeter inner edge = hole + half_perimeter
-                    // At 100% overlap: clip at hole - half_perimeter (full perimeter width into wall)
-
-                    // Calculate the overlap clip boundary
-                    // Start from hole, offset by (half_perimeter - overlap_distance)
                     float hole_offset = scale_(half_perimeter_width) - overlap_distance;
                     Polygons hole_overlap_boundary = offset(hole, hole_offset, JoinType::Square);
 
-                    // Clip the ear against the overlap boundary
                     ExPolygons full_ear;
                     if (hole_overlap_boundary.empty())
-                    {
-                        // Fallback if offset collapsed the hole entirely
                         full_ear = intersection_ex(ExPolygons{ExPolygon(point_round)}, hole_brim_boundary);
-                    }
                     else
-                    {
                         full_ear = intersection_ex(ExPolygons{ExPolygon(point_round)}, hole_overlap_boundary);
-                    }
 
-                    // Everything goes to overlap_ears (it's all overlap-protected)
-                    append(result.overlap_ears, union_ex(full_ear));
+                    append(result.ears, union_ex(full_ear));
                 }
                 else
                 {
-                    // Zero or negative overlap
-                    // For a hole, the perimeter is printed ON the hole boundary
-                    // Perimeter inner edge (toward center) = hole + half_perimeter
-                    // This is the edge we want to touch at 0% overlap
                     Polygons hole_perimeter_inner_edge = offset(hole, scale_(half_perimeter_width), JoinType::Square);
-
-                    // Apply overlap adjustment
-                    // For negative overlap: we want a gap toward center
-                    // overlap_distance is negative, so -overlap_distance is positive = grows hole = creates gap
                     float hole_clip_offset = -overlap_distance;
 
                     Polygons hole_clip_boundary;
                     if (hole_perimeter_inner_edge.empty())
-                    {
                         hole_clip_boundary = hole_brim_boundary;
-                    }
                     else if (std::abs(hole_clip_offset) < 1.0f)
-                    {
-                        // For very small clip offsets (including 0), use perimeter inner edge directly
                         hole_clip_boundary = hole_perimeter_inner_edge;
-                    }
                     else
-                    {
                         hole_clip_boundary = offset(hole_perimeter_inner_edge, hole_clip_offset, JoinType::Square);
-                    }
 
                     ExPolygons clipped = intersection_ex(ExPolygons{ExPolygon(point_round)}, hole_clip_boundary);
-                    append(result.standard_ears, clipped);
+                    append(result.ears, clipped);
                 }
-            } // End loop over holes
-        } // End loop over ExPolygons
+            }
+        }
 
-        // Don't skip outer logic - check if circle intersects outer contours too
+        // Outer brim logic
         bool intersects_outer = false;
         for (const ExPolygon &expoly : bottom_layer_expolygons)
         {
@@ -374,36 +266,12 @@ static PaintedEarResult make_brim_ears_painted(const PrintObject *object, const 
         }
 
         if (!intersects_outer)
-        {
-            // Circle doesn't intersect any outer boundaries, skip outer brim generation
             continue;
-        }
 
-        if (pt.overlap_percent > 0)
-        {
-            // For positive overlap, we need special handling
-            // Create the full ear shape
-            ExPolygon full_ear(point_round);
-
-            // For positive overlap, clip against the brim separation boundary (outer edge)
-            // but NOT against the model itself - we want to keep the overlap
-            ExPolygons clipped_ear = diff_ex(ExPolygons{full_ear}, to_polygons(outer_brim_expoly));
-
-            // Now add the overlap region - the part that goes INTO the model
-            // This is the intersection of the ear with the band between brim_separation and the overlap limit
-            ExPolygons overlap_region = intersection_ex(ExPolygons{full_ear}, to_polygons(outer_brim_expoly));
-            overlap_region = diff_ex(overlap_region, contour_for_this_ear);
-
-            // Combine and add to overlap_ears collection
-            append(clipped_ear, overlap_region);
-            append(result.overlap_ears, union_ex(clipped_ear));
-        }
-        else
-        {
-            // For zero or negative overlap, use standard clipping
-            ExPolygons clipped_ear = diff_ex(ExPolygons{ExPolygon(point_round)}, contour_for_this_ear);
-            append(result.standard_ears, clipped_ear);
-        }
+        // Each ear is individually clipped at its own overlap level, then all are merged.
+        // contour_for_this_ear already accounts for this ear's specific overlap percentage.
+        ExPolygons clipped_ear = diff_ex(ExPolygons{ExPolygon(point_round)}, contour_for_this_ear);
+        append(result.ears, clipped_ear);
     }
 
     return result;
@@ -543,10 +411,9 @@ static Polygons top_level_outer_brim_islands(const ConstPrintObjectPtrs &top_lev
 
 struct BrimAreas
 {
-    ExPolygons clippable;         // Painted mouse ear areas that will be clipped by no_brim_area
-    ExPolygons overlap_protected; // Painted mouse ear areas with positive overlap that bypass clipping
-    ExPolygons auto_ears;         // Auto mouse ear areas (btEar) - clipped, with separation from perimeter
-    ExPolygons regular_brim;      // Regular brim ring areas (btOuterOnly, btOuterAndInner)
+    ExPolygons clippable;    // Painted mouse ear areas (each individually clipped at its own overlap level)
+    ExPolygons auto_ears;    // Auto mouse ear areas (btEar) - clipped, with separation from perimeter
+    ExPolygons regular_brim; // Regular brim ring areas (btOuterOnly, btOuterAndInner)
 };
 
 static BrimAreas top_level_outer_brim_area(const Print &print, const ConstPrintObjectPtrs &top_level_objects_with_brim,
@@ -562,7 +429,7 @@ static BrimAreas top_level_outer_brim_area(const Print &print, const ConstPrintO
     ExPolygons brim_area;         // Will become result.clippable (painted standard ears)
     ExPolygons auto_ears_area;    // Will become result.auto_ears (btEar auto ears)
     ExPolygons regular_brim_area; // Will become result.regular_brim
-    ExPolygons overlap_protected; // Will become result.overlap_protected
+
     ExPolygons no_brim_area;
     for (size_t print_object_idx = 0; print_object_idx < print.objects().size(); ++print_object_idx)
     {
@@ -583,8 +450,25 @@ static BrimAreas top_level_outer_brim_area(const Print &print, const ConstPrintO
         ExPolygons brim_area_object;
         ExPolygons auto_ears_area_object;
         ExPolygons regular_brim_area_object;
-        ExPolygons overlap_protected_object;
+
         ExPolygons no_brim_area_object;
+
+        // Painted ears: generate once per object with ALL contours combined.
+        // This ensures each ear is clipped against the full model boundary, not just one ExPolygon.
+        if (use_painted_brim_ears && has_outer_brim && is_top_outer_brim)
+        {
+            ExPolygons all_outer_brim_expolys;
+            for (const ExPolygon &ep : bottom_layers_expolygons[print_object_idx])
+            {
+                Polygons cp{ep.contour};
+                append(all_outer_brim_expolys, offset_ex(cp, brim_separation, JoinType::Square));
+            }
+            PaintedEarResult painted_ears = make_brim_ears_painted(object, print, brim_separation,
+                                                                   all_outer_brim_expolys,
+                                                                   bottom_layers_expolygons[print_object_idx]);
+            append(brim_area_object, painted_ears.ears);
+        }
+
         for (const ExPolygon &ex_poly : bottom_layers_expolygons[print_object_idx])
         {
             if (has_outer_brim && is_top_outer_brim)
@@ -593,12 +477,7 @@ static BrimAreas top_level_outer_brim_area(const Print &print, const ConstPrintO
                 ExPolygons outer_brim_expoly = offset_ex(contour_polygons, brim_separation, JoinType::Square);
                 if (use_painted_brim_ears)
                 {
-                    // Manual placement: use user-placed points with their specified sizes
-                    PaintedEarResult painted_ears = make_brim_ears_painted(object, print, brim_separation,
-                                                                           outer_brim_expoly,
-                                                                           bottom_layers_expolygons[print_object_idx]);
-                    append(brim_area_object, painted_ears.standard_ears);
-                    append(overlap_protected_object, painted_ears.overlap_ears);
+                    // Already handled above - skip
                 }
                 else if (use_auto_brim_ears)
                 {
@@ -611,7 +490,7 @@ static BrimAreas top_level_outer_brim_area(const Print &print, const ConstPrintO
                 }
                 else
                 {
-                    // Regular brim - routed separately for original PrusaSlicer loop generation
+                    // Regular brim - routed separately for standard loop generation
                     append(regular_brim_area_object,
                            diff_ex(offset(ex_poly.contour, brim_width + brim_separation, JoinType::Square),
                                    outer_brim_expoly));
@@ -628,7 +507,9 @@ static BrimAreas top_level_outer_brim_area(const Print &print, const ConstPrintO
                 append(no_brim_area_object,
                        diff_ex(offset(ex_poly.contour, no_brim_offset, JoinType::Square), ex_poly_holes_reversed));
 
-            // For painted ears, don't add ANY no-brim restrictions (they handle their own clipping/overlap)
+            // For painted ears, each ear is individually clipped against the model by
+            // contour_for_this_ear in make_brim_ears_painted (which uses all contours combined).
+            // No no_brim_area needed for own model - other objects still add their contours.
             if (!use_painted_brim_ears)
             {
                 if (has_inner_brim || has_outer_brim)
@@ -643,7 +524,7 @@ static BrimAreas top_level_outer_brim_area(const Print &print, const ConstPrintO
             append_and_translate(brim_area, brim_area_object, instance);
             append_and_translate(auto_ears_area, auto_ears_area_object, instance);
             append_and_translate(regular_brim_area, regular_brim_area_object, instance);
-            append_and_translate(overlap_protected, overlap_protected_object, instance);
+
             append_and_translate(no_brim_area, no_brim_area_object, instance);
         }
     }
@@ -655,12 +536,9 @@ static BrimAreas top_level_outer_brim_area(const Print &print, const ConstPrintO
     // Union merges overlapping ears and consolidates fragments into a unified polygon set.
     brim_area = union_ex(brim_area);
     auto_ears_area = union_ex(auto_ears_area);
-    overlap_protected = union_ex(overlap_protected); // Also merge overlap-protected ears
-
-    result.clippable = diff_ex(brim_area, no_brim_area);            // Painted standard ears with standard clipping
-    result.auto_ears = diff_ex(auto_ears_area, no_brim_area);       // Auto ears with standard clipping
-    result.regular_brim = diff_ex(regular_brim_area, no_brim_area); // Regular brim areas with standard clipping
-    result.overlap_protected = overlap_protected; // Painted ears with positive overlap (bypass clipping)
+    result.clippable = diff_ex(brim_area, no_brim_area);
+    result.auto_ears = diff_ex(auto_ears_area, no_brim_area);
+    result.regular_brim = diff_ex(regular_brim_area, no_brim_area);
 
     return result;
 }
@@ -816,11 +694,11 @@ static std::vector<InnerBrimExPolygons> inner_brim_area(const Print &print,
                 polygon_idx += ex_poly.holes.size(); // Increase idx for every hole of the ExPolygon.
             }
 
-            if (brim_type == BrimType::btInnerOnly || brim_type == BrimType::btNoBrim)
+            if (brim_type == BrimType::btInnerOnly || brim_type == BrimType::btPainted)
                 append(no_brim_area_object,
                        diff_ex(offset(ex_poly.contour, no_brim_offset, JoinType::Square), ex_poly_holes_reversed));
 
-            if (brim_type == BrimType::btOuterOnly || brim_type == BrimType::btNoBrim)
+            if (brim_type == BrimType::btOuterOnly || brim_type == BrimType::btPainted)
                 append(no_brim_area_object,
                        diff_ex(ex_poly.contour, shrink_ex(ex_poly_holes_reversed, no_brim_offset, JoinType::Square)));
 
@@ -1029,12 +907,12 @@ ExtrusionEntityCollection make_brim(const Print &print, PrintTryCancel try_cance
     ExPolygons islands_area_ex = brim_areas.regular_brim;
     append(islands_area_ex, brim_areas.auto_ears);
     append(islands_area_ex, brim_areas.clippable);
-    append(islands_area_ex, brim_areas.overlap_protected);
+
     islands_area = to_polygons(islands_area_ex);
 
     ExtrusionEntityCollection brim;
 
-    // --- Regular brims: original PrusaSlicer expand-outward + clip algorithm ---
+    // --- Regular brims: expand-outward + clip algorithm ---
     // Loops grow outward from object islands and are clipped to the brim area.
     Polylines all_loops;
     if (!brim_areas.regular_brim.empty())
@@ -1075,65 +953,93 @@ ExtrusionEntityCollection make_brim(const Print &print, PrintTryCancel try_cance
         optimize_polylines_by_reversing(&all_loops);
     }
 
-    // --- Mouse ears: concentric inward-offset fill ---
-    // Three ear sources: auto_ears (btEar), clippable (painted standard), overlap_protected (painted overlap)
+    // --- Mouse ears: concentric fill via Athena perimeter generator ---
+    // Uses FillConcentric with Athena WallToolPaths for proper gap filling at ear centers.
     // Auto ears get half-spacing inset to prevent overlap with external perimeter.
-    // Advanced painted ears (clippable + overlap_protected) start at raw boundary - completely untouched.
+    // Painted ears start at raw boundary - each ear was individually clipped at its own overlap level.
     ExPolygons all_ear_areas = brim_areas.auto_ears;
     append(all_ear_areas, brim_areas.clippable);
-    append(all_ear_areas, brim_areas.overlap_protected);
     if (!all_ear_areas.empty())
     {
-        const float mbw = max_brim_width(print.objects());
-        const size_t max_loops = mbw > 0 ? size_t(ceil(double(scale_(mbw)) / double(flow.scaled_spacing()))) + 2 : 0;
         const size_t auto_ears_count = brim_areas.auto_ears.size();
 
-        for (size_t ear_idx = 0; ear_idx < all_ear_areas.size(); ++ear_idx)
+        // Sort ears by nearest-neighbor to minimize travel between them.
+        // Start from the skirt's end position when available (draft shield generates skirt first).
+        std::vector<bool> is_auto_ear(all_ear_areas.size(), false);
+        for (size_t i = 0; i < auto_ears_count; ++i)
+            is_auto_ear[i] = true;
+        Points ear_centroids;
+        ear_centroids.reserve(all_ear_areas.size());
+        for (const ExPolygon &ep : all_ear_areas)
+            ear_centroids.push_back(ep.contour.centroid());
+        const Point *start_near = nullptr;
+        Point skirt_end;
+        if (!print.skirt().empty())
         {
-            const ExPolygon &brim_area = all_ear_areas[ear_idx];
+            skirt_end = print.skirt().last_point();
+            start_near = &skirt_end;
+        }
+        std::vector<size_t> ear_order = chain_points(ear_centroids, start_near);
+
+        // Get a print object config for the perimeter generator
+        const PrintObjectConfig &obj_config = print.objects().front()->config();
+
+        // Configure FillConcentric with Athena
+        FillConcentric fill_concentric;
+        fill_concentric.spacing = flow.spacing();
+        fill_concentric.overlap = 0;
+        fill_concentric.bounding_width = 0;
+        fill_concentric.loop_clipping = 0;
+        fill_concentric.print_config = &print.config();
+        fill_concentric.print_object_config = &obj_config;
+
+        FillParams fill_params;
+        fill_params.density = 1.0f;
+        fill_params.dont_adjust = false;
+        fill_params.use_advanced_perimeters = true;
+        fill_params.perimeter_generator = PerimeterGeneratorType::Athena;
+        fill_params.layer_height = print.skirt_first_layer_height();
+        fill_params.prefer_clockwise_movements = print.config().prefer_clockwise_movements;
+
+        for (size_t ordered_idx : ear_order)
+        {
+            const ExPolygon &brim_area = all_ear_areas[ordered_idx];
             try_cancel();
 
             // Auto ears: inset by half-spacing so the first loop doesn't overlap the external perimeter.
-            // Advanced painted ears (both clippable and overlap_protected): start at raw boundary as designed.
-            ExPolygons current = (ear_idx < auto_ears_count)
-                                     ? offset_ex(ExPolygons{brim_area}, -0.5f * float(flow.scaled_spacing()),
-                                                 JoinType::Square)
-                                     : ExPolygons{brim_area};
-
-            for (size_t loop_idx = 0; loop_idx < max_loops && !current.empty(); ++loop_idx)
+            // Painted ears: use raw boundary as designed.
+            ExPolygon ear_shape;
+            if (is_auto_ear[ordered_idx])
             {
-                for (const ExPolygon &ex : current)
+                ExPolygons inset = offset_ex(ExPolygons{brim_area}, -0.5f * float(flow.scaled_spacing()),
+                                             JoinType::Square);
+                if (inset.empty())
+                    continue;
+                ear_shape = std::move(inset.front());
+            }
+            else
+            {
+                ear_shape = brim_area;
+            }
+
+            fill_params.start_near = ear_shape.contour.centroid();
+
+            Surface surface(stBottom, ear_shape);
+            ThickPolylines thick_polylines = fill_concentric.fill_surface_advanced(&surface, fill_params);
+
+            // Convert ThickPolylines to ExtrusionLoop/ExtrusionMultiPath entities
+            Flow ear_flow = flow.with_spacing(float(fill_concentric.spacing));
+            for (const ThickPolyline &tp : thick_polylines)
+            {
+                ExtrusionMultiPath multi_path = PerimeterGenerator::thick_polyline_to_multi_path(
+                    tp, ExtrusionRole::Skirt, ear_flow, scaled<float>(0.05), float(SCALED_EPSILON));
+                if (!multi_path.empty())
                 {
-                    if (ex.contour.length() > flow.scaled_spacing())
-                    {
-                        ExtrusionLoop *loop = new ExtrusionLoop();
-                        loop->paths.emplace_back(
-                            ExtrusionAttributes{ExtrusionRole::Skirt,
-                                                ExtrusionFlow{float(flow.mm3_per_mm()), float(flow.width()),
-                                                              float(print.skirt_first_layer_height())}});
-                        loop->paths.back().polyline = ex.contour.split_at_first_point();
-                        loop->paths.back().polyline.points.push_back(loop->paths.back().polyline.points.front());
-                        brim.entities.emplace_back(loop);
-
-                        for (const Polygon &hole : ex.holes)
-                        {
-                            if (hole.length() > flow.scaled_spacing())
-                            {
-                                ExtrusionLoop *hole_loop = new ExtrusionLoop();
-                                hole_loop->paths.emplace_back(
-                                    ExtrusionAttributes{ExtrusionRole::Skirt,
-                                                        ExtrusionFlow{float(flow.mm3_per_mm()), float(flow.width()),
-                                                                      float(print.skirt_first_layer_height())}});
-                                hole_loop->paths.back().polyline = hole.split_at_first_point();
-                                hole_loop->paths.back().polyline.points.push_back(
-                                    hole_loop->paths.back().polyline.points.front());
-                                brim.entities.emplace_back(hole_loop);
-                            }
-                        }
-                    }
+                    if (multi_path.paths.front().first_point() == multi_path.paths.back().last_point())
+                        brim.entities.emplace_back(new ExtrusionLoop(std::move(multi_path.paths)));
+                    else
+                        brim.entities.emplace_back(new ExtrusionMultiPath(std::move(multi_path)));
                 }
-
-                current = offset_ex(current, -float(flow.scaled_spacing()), JoinType::Miter);
             }
         }
     }

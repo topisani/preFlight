@@ -1092,7 +1092,12 @@ void TabbedSettingsPanel::UpdateSidebarVisibility()
         parent_sizer->Show(aux_sizer, any_sibling_visible);
     }
 
-    // Step 4: Update layout and scrollbar
+    // Step 4: Re-apply individual row visibility.
+    // wxSizerItem::Show(true) on Item_Sizer calls ShowItems(true) which recursively shows ALL
+    // children, undoing the individual row hiding from step 1. Re-applying restores correct state.
+    UpdateRowVisibility();
+
+    // Step 5: Update layout and scrollbar
     UpdateContentLayout();
 
     Thaw();
@@ -1595,9 +1600,9 @@ wxPanel *PrintSettingsPanel::BuildLayersContent()
         auto *adv_group = CreateFlatStaticBoxSizer(content, _L("Advanced"));
         CreateSettingRow(content, adv_group, "perimeter_generator", _L("Perimeter generator"));
         CreateSettingRow(content, adv_group, "seam_position", _L("Seam position"));
-        CreateSettingRow(content, adv_group, "seam_notch", _L("Nip/Tuck seams"));
-        CreateSettingRow(content, adv_group, "seam_notch_width", _L("Nip/Tuck width"));
-        CreateSettingRow(content, adv_group, "seam_notch_angle", _L("Nip/Tuck corner threshold"));
+        CreateSettingRow(content, adv_group, "seam_type", _L("Seam type"));
+        CreateSettingRow(content, adv_group, "seam_notch_width", _L("Seam notch width"));
+        CreateSettingRow(content, adv_group, "seam_notch_angle", _L("Seam notch corner threshold"));
         CreateSettingRow(content, adv_group, "seam_gap_distance", _L("Seam gap"));
         CreateSettingRow(content, adv_group, "staggered_inner_seams", _L("Staggered inner seams"));
         CreateSettingRow(content, adv_group, "external_perimeters_first", _L("External perimeters first"));
@@ -1890,6 +1895,7 @@ wxPanel *PrintSettingsPanel::BuildSpeedContent()
     // Acceleration control group
     {
         auto *accel_group = CreateFlatStaticBoxSizer(content, _L("Acceleration"));
+        CreateSettingRow(content, accel_group, "default_acceleration", _L("Default"));
         CreateSettingRow(content, accel_group, "external_perimeter_acceleration", _L("External perimeters"));
         CreateSettingRow(content, accel_group, "perimeter_acceleration", _L("Perimeters"));
         CreateSettingRow(content, accel_group, "top_solid_infill_acceleration", _L("Top solid infill"));
@@ -1901,7 +1907,6 @@ wxPanel *PrintSettingsPanel::BuildSpeedContent()
         CreateSettingRow(content, accel_group, "wipe_tower_acceleration", _L("Wipe tower"));
         CreateSettingRow(content, accel_group, "travel_acceleration", _L("Travel"));
         CreateSettingRow(content, accel_group, "travel_short_distance_acceleration", _L("Short distance travel"));
-        CreateSettingRow(content, accel_group, "default_acceleration", _L("Default"));
         sizer->Add(accel_group, 0, wxEXPAND | wxALL, em / 4);
     }
 
@@ -2107,6 +2112,7 @@ wxPanel *PrintSettingsPanel::BuildAdvancedContent()
     {
         auto *arachne_group = CreateFlatStaticBoxSizer(content, _L("Athena / Arachne perimeter generator"));
         CreateSettingRow(content, arachne_group, "perimeter_compression", _L("Perimeter compression"));
+        CreateSettingRow(content, arachne_group, "thin_wall_precision", _L("Thin wall width precision"));
         CreateSettingRow(content, arachne_group, "wall_transition_angle", _L("Wall transition angle"));
         CreateSettingRow(content, arachne_group, "wall_transition_filter_deviation",
                          _L("Wall transition filter deviation"));
@@ -2634,6 +2640,7 @@ void PrintSettingsPanel::OnSettingChanged(const std::string &opt_key)
     if (print_tab)
     {
         print_tab->reload_config();
+        print_tab->toggle_options();
         print_tab->update_dirty();
         print_tab->update_changed_ui();
     }
@@ -2807,13 +2814,14 @@ void PrintSettingsPanel::ApplyToggleLogic()
     bool have_perimeters = config.opt_int("perimeters") > 0;
     for (const char *el :
          {"extra_perimeters", "extra_perimeters_on_overhangs", "thin_walls", "overhangs", "seam_position",
-          "staggered_inner_seams", "seam_notch", "seam_notch_width", "seam_notch_angle", "external_perimeters_first",
+          "staggered_inner_seams", "seam_type", "seam_notch_width", "seam_notch_angle", "external_perimeters_first",
           "external_perimeter_extrusion_width", "perimeter_speed", "small_perimeter_speed", "external_perimeter_speed",
           "enable_dynamic_overhang_speeds"})
         ToggleOption(el, have_perimeters);
 
-    ToggleOption("seam_notch_width", have_perimeters && config.opt_bool("seam_notch"));
-    ToggleOption("seam_notch_angle", have_perimeters && config.opt_bool("seam_notch"));
+    bool seam_notch_active = have_perimeters && config.opt_enum<SeamNotchType>("seam_type") != sntRegular;
+    ToggleOption("seam_notch_width", seam_notch_active);
+    ToggleOption("seam_notch_angle", seam_notch_active);
 
     // Dynamic overhang speeds depend on enable_dynamic_overhang_speeds
     bool have_dynamic_overhang = have_perimeters && config.opt_bool("enable_dynamic_overhang_speeds");
@@ -2897,7 +2905,7 @@ void PrintSettingsPanel::ApplyToggleLogic()
         ToggleOption(el, have_skirt);
 
     // Brim dependencies
-    bool have_brim = config.opt_enum<BrimType>("brim_type") != btNoBrim;
+    bool have_brim = true; // All brim types show brim settings (btPainted uses them as defaults)
     for (const char *el : {"brim_width", "brim_separation", "brim_ears_max_angle", "brim_ears_detection_length"})
         ToggleOption(el, have_brim);
     ToggleOption("perimeter_extruder", have_perimeters || have_brim);
@@ -2989,6 +2997,7 @@ void PrintSettingsPanel::ApplyToggleLogic()
     ToggleOption("min_feature_size", have_advanced_perimeters);
     ToggleOption("min_bead_width", have_arachne);
     ToggleOption("perimeter_compression", have_athena);
+    ToggleOption("thin_wall_precision", have_athena);
 
     // Scarf seam dependencies
     ToggleOption("scarf_seam_placement", !has_spiral_vase);

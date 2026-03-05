@@ -747,7 +747,11 @@ void ViewerImpl::init(const std::string &opengl_context_version)
 #ifdef ENABLE_OPENGL_ES
             throw std::runtime_error("LibVGCode requires an OpenGL ES context based on OpenGL ES 3.0 or higher.\n");
 #else
+#if defined(__linux__) && defined(__aarch64__)
+            throw std::runtime_error("LibVGCode requires an OpenGL context based on OpenGL 3.1 or higher.\n");
+#else
             throw std::runtime_error("LibVGCode requires an OpenGL context based on OpenGL 3.2 or higher.\n");
+#endif
 #endif // ENABLE_OPENGL_ES
         }
     }
@@ -1257,11 +1261,26 @@ void ViewerImpl::update_enabled_entities()
     m_settings.update_enabled_entities = false;
 }
 
+// How much to darken previous (non-active) layers during g-code scrubbing.
+// 0.0 = full brightness (no darkening), 1.0 = completely black.
+static constexpr float PREVIOUS_LAYER_DARKEN_FACTOR = 0.60f;
+
 static float encode_color(const Color &color)
 {
     const int r = static_cast<int>(color[0]);
     const int g = static_cast<int>(color[1]);
     const int b = static_cast<int>(color[2]);
+    const int i_color = r << 16 | g << 8 | b;
+    return static_cast<float>(i_color);
+}
+
+// Return encoded color darkened by the given factor (0 = unchanged, 1 = black).
+static float encode_color_darkened(const Color &color, float factor)
+{
+    const float keep = 1.0f - factor;
+    const int r = static_cast<int>(color[0] * keep);
+    const int g = static_cast<int>(color[1] * keep);
+    const int b = static_cast<int>(color[2] * keep);
     const int i_color = r << 16 | g << 8 | b;
     return static_cast<float>(i_color);
 }
@@ -1274,18 +1293,23 @@ void ViewerImpl::update_colors_texture()
 #endif // ENABLE_OPENGL_ES
 
     const size_t top_layer_id = m_settings.top_layer_only_view_range ? m_layers.get_view_range()[1] : 0;
-    const bool color_top_layer_only = m_view_range.get_full()[1] != m_view_range.get_visible()[1];
 
-    // Based on current settings and slider position, we might want to render some
-    // vertices as dark grey. Use either that or the normal color (from the cache).
+    // Full render = all layers shown and all commands of the top layer visible.
+    // In that case, show everything at full brightness. Otherwise, darken previous layers.
+    const bool full_render = (m_layers.get_view_range()[0] == 0) &&
+                             (m_layers.get_view_range()[1] >= m_layers.count() - 1) &&
+                             (m_view_range.get_visible()[1] == m_view_range.get_full()[1]);
+
     std::vector<float> colors(m_vertices_colors.size());
     assert(colors.size() == m_vertices.size() && m_vertices_colors.size() == m_vertices.size());
     for (size_t i = 0; i < m_vertices.size(); ++i)
-        colors[i] = m_vertices_colors[i]; // Always use the actual color
-    // Original code that grayed out previous layers:
-    // colors[i] = (color_top_layer_only && m_vertices[i].layer_id < top_layer_id &&
-    //             (!m_settings.spiral_vase_mode || i != m_view_range.get_enabled()[0])) ?
-    //             encode_color(DUMMY_COLOR) : m_vertices_colors[i];
+    {
+        if (!full_render && m_vertices[i].layer_id < top_layer_id &&
+            (!m_settings.spiral_vase_mode || i != m_view_range.get_enabled()[0]))
+            colors[i] = encode_color_darkened(get_vertex_color(m_vertices[i]), PREVIOUS_LAYER_DARKEN_FACTOR);
+        else
+            colors[i] = m_vertices_colors[i];
+    }
 
 #ifdef ENABLE_OPENGL_ES
     if (!colors.empty())

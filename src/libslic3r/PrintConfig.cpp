@@ -171,6 +171,10 @@ static const t_config_enum_values s_keys_map_PerimeterCompression{{"off", int(pc
                                                                   {"aggressive", int(pcAggressive)}};
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(PerimeterCompression)
 
+static const t_config_enum_values s_keys_map_ThinWallPrecision{
+    {"0.001", int(twp001)}, {"0.005", int(twp005)}, {"0.01", int(twp01)}, {"0.05", int(twp05)}, {"0.1", int(twp1)}};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(ThinWallPrecision)
+
 static const t_config_enum_values s_keys_map_FanSpinupResponseType{{"axial", int(FanSpinupResponseType::fsrtAxial)},
                                                                    {"blower", int(FanSpinupResponseType::fsrtBlower)},
                                                                    {"high_inertia",
@@ -244,6 +248,13 @@ static const t_config_enum_values s_keys_map_SeamPosition{{"random", spRandom},
 
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SeamPosition)
 
+static const t_config_enum_values s_keys_map_SeamNotchType{{"regular", sntRegular},
+                                                           {"niptuck", sntNipTuck},
+                                                           {"nip", sntNip},
+                                                           {"tuck", sntTuck}};
+
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SeamNotchType)
+
 static const t_config_enum_values s_keys_map_ScarfSeamPlacement{
     {"nowhere", static_cast<int>(ScarfSeamPlacement::nowhere)},
     {"contours", static_cast<int>(ScarfSeamPlacement::countours)},
@@ -274,8 +285,9 @@ static inline const t_config_enum_values s_keys_map_SLASupportTreeType = {
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SLASupportTreeType);
 
 static const t_config_enum_values s_keys_map_BrimType = {
-    {"no_brim", btNoBrim},       {"outer_only", btOuterOnly},
-    {"inner_only", btInnerOnly}, {"outer_and_inner", btOuterAndInner},
+    {"outer_only", btOuterOnly},
+    {"inner_only", btInnerOnly},
+    {"outer_and_inner", btOuterAndInner},
     {"brim_ears", btEar},  // Mouse ears - only at sharp corners
     {"painted", btPainted} // Manually painted brim areas
 };
@@ -951,7 +963,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm/s or %");
     def->min = 0;
     def->mode = comExpert;
-    def->set_default_value(new ConfigOptionFloatOrPercent(15, false));
+    def->set_default_value(new ConfigOptionFloatOrPercent(40, true));
 
     def = this->add("overhang_speed_1", coFloatOrPercent);
     def->label = L("speed for 25% overlap");
@@ -960,7 +972,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm/s or %");
     def->min = 0;
     def->mode = comExpert;
-    def->set_default_value(new ConfigOptionFloatOrPercent(15, false));
+    def->set_default_value(new ConfigOptionFloatOrPercent(55, true));
 
     def = this->add("overhang_speed_2", coFloatOrPercent);
     def->label = L("speed for 50% overlap");
@@ -969,7 +981,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm/s or %");
     def->min = 0;
     def->mode = comExpert;
-    def->set_default_value(new ConfigOptionFloatOrPercent(20, false));
+    def->set_default_value(new ConfigOptionFloatOrPercent(70, true));
 
     def = this->add("overhang_speed_3", coFloatOrPercent);
     def->label = L("speed for 75% overlap");
@@ -978,7 +990,7 @@ void PrintConfigDef::init_fff_params()
     def->sidetext = L("mm/s or %");
     def->min = 0;
     def->mode = comExpert;
-    def->set_default_value(new ConfigOptionFloatOrPercent(25, false));
+    def->set_default_value(new ConfigOptionFloatOrPercent(85, true));
 
     def = this->add("enable_dynamic_fan_speeds", coBools);
     def->label = L("Enable dynamic fan speeds");
@@ -1043,17 +1055,15 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Brim type");
     def->category = L("Skirt and brim");
     def->tooltip = L("The places where the brim will be printed around each object on the first layer.");
-    def->set_enum<BrimType>(std::initializer_list<std::pair<std::string_view, std::string_view>>{
-        // Note: "no_brim" is suppressed from the UI but kept in the enum for compatibility
-        {"painted", L("Advanced mouse ears")}, // Now first and default
-        {"brim_ears", L("Auto mouse ears")},
-        {"outer_only", L("Outer brim only")},
-        {"inner_only", L("Inner brim only")},
-        {"outer_and_inner", L("Outer and inner brim")}
-        // "no_brim" intentionally omitted from UI
-    });
+    def->set_enum<BrimType>(
+        std::initializer_list<std::pair<std::string_view, std::string_view>>{{"painted", L("Advanced mouse ears")},
+                                                                             {"brim_ears", L("Auto mouse ears")},
+                                                                             {"outer_only", L("Outer brim only")},
+                                                                             {"inner_only", L("Inner brim only")},
+                                                                             {"outer_and_inner",
+                                                                              L("Outer and inner brim")}});
     def->mode = comSimple;
-    def->set_default_value(new ConfigOptionEnum<BrimType>(btPainted)); // Was btOuterOnly
+    def->set_default_value(new ConfigOptionEnum<BrimType>(btPainted));
 
     def = this->add("brim_separation", coFloat);
     def->label = L("Brim separation gap");
@@ -2193,6 +2203,25 @@ void PrintConfigDef::init_fff_params()
         {"off", L("Disabled")}, {"moderate", L("Moderate")}, {"aggressive", L("Aggressive")}});
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionEnum<PerimeterCompression>(pcOff));
+
+    def = this->add("thin_wall_precision", coEnum);
+    def->label = L("Thin wall width precision");
+    def->category = L("Layers and Perimeters");
+    def->tooltip = L("Controls the rounding precision for thin wall extrusion widths. "
+                     "Athena measures the actual wall thickness and snaps it to a grid to reduce noise.\n\n"
+                     "Finer values (0.001mm) track tapered geometry more smoothly but may produce "
+                     "visible width variation on constant-thickness walls.\n\n"
+                     "Coarser values (0.1mm) produce consistent widths on uniform walls but "
+                     "step more coarsely on tapered geometry.\n\n"
+                     "This setting only applies to the Athena perimeter generator.");
+    def->set_enum<ThinWallPrecision>(
+        std::initializer_list<std::pair<std::string_view, std::string_view>>{{"0.001", L("0.001 mm")},
+                                                                             {"0.005", L("0.005 mm")},
+                                                                             {"0.01", L("0.01 mm")},
+                                                                             {"0.05", L("0.05 mm")},
+                                                                             {"0.1", L("0.1 mm")}});
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionEnum<ThinWallPrecision>(twp01));
 
     def = this->add("gap_fill_speed", coFloat);
     def->label = L("Gap fill");
@@ -3576,22 +3605,30 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
-    def = this->add("seam_notch", coBool);
-    def->label = L("Nip/Tuck seams");
+    def = this->add("seam_type", coEnum);
+    def->label = L("Seam type");
     def->category = L("Layers and Perimeters");
-    def->tooltip = L("Creates a small V-shaped channel at the seam point on external perimeters to hide "
-                     "start/stop blobs. The external perimeter is nipped inward at the seam and the first "
-                     "inner perimeter is tucked to absorb the disturbance, so remaining perimeters are unaffected.\n\n"
-                     "Requires at least 2 perimeters in the config. In thin wall areas where only a single "
-                     "perimeter is generated, the nip is still applied to hide the seam but the inner tuck "
-                     "is skipped.");
+    def->tooltip = L("Controls how the seam point on external perimeters is shaped to hide start/stop blobs.\n\n"
+                     "Regular - No seam shaping. Standard seam behavior.\n\n"
+                     "Nip/Tuck - Creates a V-shaped channel one perimeter deep at the seam. Both the start and "
+                     "end of the external perimeter are pushed inward, and the first inner perimeter is trimmed "
+                     "to absorb the disturbance.\n\n"
+                     "Nip - Only the start of the external perimeter is pushed inward at the seam. The end "
+                     "remains on the normal path. The inner perimeter is trimmed on the start side only.\n\n"
+                     "Tuck - Only the end of the external perimeter is pushed inward at the seam. The start "
+                     "remains on the normal path. The inner perimeter is trimmed on the end side only.\n\n"
+                     "Note: All non-Regular modes require multiple perimeters and are not used in Spiral Vase mode.");
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionBool(false));
+    def->set_default_value(new ConfigOptionEnum<SeamNotchType>(sntRegular));
+    def->set_enum<SeamNotchType>(std::initializer_list<std::pair<std::string_view, std::string_view>>{
+        {"regular", L("Regular")}, {"niptuck", L("Nip/Tuck")}, {"nip", L("Nip")}, {"tuck", L("Tuck")}});
 
     def = this->add("seam_notch_width", coFloat);
-    def->label = L("Nip/Tuck width");
+    def->label = L("Seam notch width");
     def->category = L("Layers and Perimeters");
     def->tooltip = L("Width of the V-shaped notch as a multiple of the external perimeter extrusion width. "
+                     "In Nip/Tuck mode, this is the full notch width across both sides of the seam. "
+                     "In Nip or Tuck mode, only half the width is used since only one side of the seam is shaped. "
                      "The depth is automatically calculated from perimeter spacing. "
                      "Wider values are more forgiving for blobs but create a larger surface depression. "
                      "Narrower values are subtler.");
@@ -3602,16 +3639,16 @@ void PrintConfigDef::init_fff_params()
     def->set_default_value(new ConfigOptionFloat(2.0));
 
     def = this->add("seam_notch_angle", coFloat);
-    def->label = L("Nip/Tuck corner threshold");
+    def->label = L("Seam notch corner threshold");
     def->category = L("Layers and Perimeters");
     def->tooltip = L(
-        "Controls where Nip/Tuck is applied based on corner sharpness. "
-        "At sharp corners the seam is naturally hidden by the geometry, so the Nip/Tuck surgery "
+        "Controls where seam notching is applied based on corner sharpness. "
+        "At sharp corners the seam is naturally hidden by the geometry, so notching "
         "is unnecessary.\n\n"
         "Seams on corners sharper than this angle are skipped. The default of 44\u00B0 means any corner "
-        "of 44\u00B0 or less is considered sharp enough to hide the seam on its own \u2014 just under 45\u00B0, "
+        "of 44\u00B0 or less is considered sharp enough to hide the seam on its own - just under 45\u00B0, "
         "where a clean fold already conceals the junction.\n\n"
-        "Set to 0 to apply Nip/Tuck everywhere regardless of corner angle.");
+        "Set to 0 to apply seam notching everywhere regardless of corner angle.");
     def->sidetext = L("\u00B0");
     def->min = 0;
     def->max = 90;
@@ -6013,6 +6050,11 @@ void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &va
             // Legacy: "marlinfirmware" flavor renamed to "marlin2".
             value = "marlin2";
     }
+    else if (opt_key == "brim_type" && value == "no_brim")
+    {
+        // Legacy: no_brim replaced by painted (no painted points = no brim)
+        value = "painted";
+    }
     else if (opt_key == "host_type" && value == "mainsail")
     {
         // the "mainsail" key (introduced in 2.6.0-alpha6) was renamed to "moonraker" (in 2.6.0-rc1).
@@ -6160,6 +6202,13 @@ void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &va
         }
     }
 
+    // Legacy: seam_notch (bool) replaced by seam_type (enum)
+    if (opt_key == "seam_notch")
+    {
+        opt_key = "seam_type";
+        value = (value == "1" || value == "true") ? "niptuck" : "regular";
+    }
+
     if (PrintConfigDef_ignore.find(opt_key) != PrintConfigDef_ignore.end())
     {
         opt_key = {};
@@ -6222,6 +6271,28 @@ void PrintConfigDef::handle_legacy_composite(DynamicPrintConfig &config)
         {
             config.set_key_value("filament_shrinkage_compensation_x", opt_xy->clone());
             config.set_key_value("filament_shrinkage_compensation_y", opt_xy->clone());
+        }
+    }
+
+    // Auto-correct Orca-format shrinkage values. Orca uses "shrinks to X%" (e.g. 99.67%),
+    // preFlight uses "shrinks by X%" (e.g. 0.33%). Values above 10% are physically
+    // unrealistic and almost certainly imported without conversion. Invert them.
+    for (const char *key : {"filament_shrinkage_compensation_x", "filament_shrinkage_compensation_y",
+                            "filament_shrinkage_compensation_z"})
+    {
+        if (auto *opt = config.opt<ConfigOptionPercents>(key))
+        {
+            bool changed = false;
+            for (double &v : opt->values)
+            {
+                if (v > 10.0)
+                {
+                    v = 100.0 - v;
+                    changed = true;
+                }
+            }
+            if (changed)
+                BOOST_LOG_TRIVIAL(warning) << "Auto-converted Orca-format shrinkage value for " << key;
         }
     }
 

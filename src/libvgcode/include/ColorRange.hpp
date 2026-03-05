@@ -9,6 +9,7 @@
 #include "../include/Types.hpp"
 
 #include <cfloat>
+#include <cstddef>
 #include <map>
 #include <vector>
 

@@ -109,13 +109,12 @@ ExtrusionPaths calculate_and_split_overhanging_extrusions(
         result.back().polyline.append(Point::new_scale(extended_points[i].position));
         result.back().overhang_attributes_mutable()->end_distance_from_prev_layer = extended_points[i].distance;
 
+        // Moderate tolerance to reduce excessive path splitting while preserving real overhang transitions
         if (std::abs(calculated_distances[sequence_start_index].first - calculated_distances[i].first) <
-                0.001 * path.attributes().width &&
+                0.01 * path.attributes().width &&
             std::abs(calculated_distances[sequence_start_index].second - calculated_distances[i].second) < 0.001)
         {
             // do not start new path, the attributes are similar enough
-            // NOTE: a larger tolerance may be applied here. However, it makes the gcode preview much less smooth
-            // (But it has very likely zero impact on the print quality.)
         }
         else if (i + 1 < extended_points.size())
         { // do not start new path if this is last point!
@@ -289,7 +288,10 @@ OverhangSpeeds calculate_overhang_speed(const ExtrusionAttributes &attributes, c
 {
     assert(attributes.overhang_attributes.has_value());
 
-    auto interpolate_speed = [](const std::map<float, float> &values, float distance)
+    // Snap to nearest configured speed bucket instead of interpolating. Each of the
+    // configured overlap thresholds (0/25/50/75/100%) controls the range closest to it,
+    // producing exactly 5 discrete speed levels with clean transitions.
+    auto snap_to_nearest_speed = [](const std::map<float, float> &values, float distance)
     {
         auto upper_dist = values.lower_bound(distance);
         if (upper_dist == values.end())
@@ -302,8 +304,8 @@ OverhangSpeeds calculate_overhang_speed(const ExtrusionAttributes &attributes, c
         }
 
         auto lower_dist = std::prev(upper_dist);
-        float t = (distance - lower_dist->first) / (upper_dist->first - lower_dist->first);
-        return (1.0f - t) * lower_dist->second + t * upper_dist->second;
+        float midpoint = (lower_dist->first + upper_dist->first) * 0.5f;
+        return (distance < midpoint) ? lower_dist->second : upper_dist->second;
     };
 
     const std::map<float, float> speed_sections = calc_print_speed_sections(attributes, config,
@@ -312,15 +314,14 @@ OverhangSpeeds calculate_overhang_speed(const ExtrusionAttributes &attributes, c
     const std::map<float, float> fan_speed_sections = calc_fan_speed_sections(attributes, config, extruder_id);
 
     const float extrusion_speed =
-        std::min(interpolate_speed(speed_sections, attributes.overhang_attributes->start_distance_from_prev_layer),
-                 interpolate_speed(speed_sections, attributes.overhang_attributes->end_distance_from_prev_layer));
-    const float curled_base_speed = interpolate_speed(speed_sections,
-                                                      attributes.width *
-                                                          attributes.overhang_attributes->proximity_to_curled_lines);
+        std::min(snap_to_nearest_speed(speed_sections, attributes.overhang_attributes->start_distance_from_prev_layer),
+                 snap_to_nearest_speed(speed_sections, attributes.overhang_attributes->end_distance_from_prev_layer));
+    const float curled_base_speed = snap_to_nearest_speed(
+        speed_sections, attributes.width * attributes.overhang_attributes->proximity_to_curled_lines);
 
-    const float fan_speed =
-        std::min(interpolate_speed(fan_speed_sections, attributes.overhang_attributes->start_distance_from_prev_layer),
-                 interpolate_speed(fan_speed_sections, attributes.overhang_attributes->end_distance_from_prev_layer));
+    const float fan_speed = std::min(
+        snap_to_nearest_speed(fan_speed_sections, attributes.overhang_attributes->start_distance_from_prev_layer),
+        snap_to_nearest_speed(fan_speed_sections, attributes.overhang_attributes->end_distance_from_prev_layer));
 
     OverhangSpeeds overhang_speeds = {std::min(curled_base_speed, extrusion_speed), fan_speed};
     if (!config.enable_dynamic_overhang_speeds)

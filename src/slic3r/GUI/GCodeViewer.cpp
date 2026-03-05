@@ -1090,26 +1090,45 @@ void GCodeViewer::SequentialView::GCodeWindow::render(float top, float bottom, s
     // window height
     const float wnd_height = bottom - top;
 
-    // number of visible lines
+    // Push legend font BEFORE measuring text metrics so text_height and
+    // visible_lines_count use the correct (smaller) legend font, not the default font.
+    ImGuiWrapper &imgui = *wxGetApp().imgui();
+    ImFont *gcode_legend_font = imgui.get_legend_font();
+    if (gcode_legend_font)
+        ImGui::PushFont(gcode_legend_font);
+
+    // number of visible lines (must be after PushFont for correct sizing)
     const float text_height = ImGui::CalcTextSize("0").y;
     const ImGuiStyle &style = ImGui::GetStyle();
     const size_t visible_lines_count = static_cast<size_t>(
         (wnd_height - 2.0f * style.WindowPadding.y + style.ItemSpacing.y) / (text_height + style.ItemSpacing.y));
 
     if (visible_lines_count == 0)
+    {
+        if (gcode_legend_font)
+            ImGui::PopFont();
         return;
+    }
 
     if (m_virtual_file != nullptr)
     {
         // When using virtual file, we don't need lines_ends
         if (m_virtual_file->line_count() == 0)
+        {
+            if (gcode_legend_font)
+                ImGui::PopFont();
             return;
+        }
     }
     else
     {
         // Fallback: check lines_ends for file-based rendering
         if (m_lines_ends.empty() || m_lines_ends.front().empty())
+        {
+            if (gcode_legend_font)
+                ImGui::PopFont();
             return;
+        }
     }
 
     auto resize_range = [&](Range &range, size_t lines_count)
@@ -1174,18 +1193,13 @@ void GCodeViewer::SequentialView::GCodeWindow::render(float top, float bottom, s
         // If still empty after update, return
         if (m_lines_cache.empty())
         {
+            if (gcode_legend_font)
+                ImGui::PopFont();
             return;
         }
     }
 
-    ImGuiWrapper &imgui = *wxGetApp().imgui();
-
-    // Push the legend font early so CalcTextSize uses the correct font metrics
-    ImFont *gcode_legend_font = imgui.get_legend_font();
-    if (gcode_legend_font)
-        ImGui::PushFont(gcode_legend_font);
-
-    // line number's column width (must be after PushFont for correct sizing)
+    // line number's column width (already using legend font from PushFont above)
     const float id_width = ImGui::CalcTextSize(std::to_string(*visible_range.max).c_str()).x;
 
     auto add_item_to_line = [](const std::string &txt, const ImVec4 &color, float spacing, size_t &current_length,
@@ -1243,7 +1257,12 @@ void GCodeViewer::SequentialView::GCodeWindow::render(float top, float bottom, s
     UIColors::LegendWindowBackgroundRGBA(gcode_bg_r, gcode_bg_g, gcode_bg_b, gcode_bg_a);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(gcode_bg_r, gcode_bg_g, gcode_bg_b, gcode_bg_a));
     ImGuiPureWrap::begin(std::string("G-code"), ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration |
-                                                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoFocusOnAppearing);
+                                                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoFocusOnAppearing |
+                                                    ImGuiWindowFlags_NoScrollWithMouse);
+
+    // Prevent any accumulated internal scroll from shifting content.
+    // We handle scrolling ourselves via the slider, not via ImGui window scroll.
+    ImGui::SetScrollY(0.0f);
 
     // Check if mouse is hovering over this window and handle scroll
     if (ImGui::IsWindowHovered())
@@ -1257,10 +1276,12 @@ void GCodeViewer::SequentialView::GCodeWindow::render(float top, float bottom, s
         }
     }
 
-    // center the text in the window by pushing down the first line
-    const float f_lines_count = static_cast<float>(visible_lines_count);
-    ImGui::SetCursorPosY(0.5f *
-                         (wnd_height - f_lines_count * text_height - (f_lines_count - 1.0f) * style.ItemSpacing.y));
+    // Force the highlighted line to the exact vertical center of the window.
+    // Calculate where line rendering must start so that curr_line_id's center lands at wnd_height/2.
+    const float line_step = text_height + style.ItemSpacing.y;
+    const size_t curr_offset = (curr_line_id >= *visible_range.min) ? curr_line_id - *visible_range.min : 0;
+    const float start_y = 0.5f * (wnd_height - text_height) - static_cast<float>(curr_offset) * line_step;
+    ImGui::SetCursorPosY(std::max(start_y, 0.0f));
 
     struct LineInfo
     {
@@ -1499,11 +1520,14 @@ void GCodeViewer::load_as_gcode(const GCodeProcessorResult &gcode_result, const 
     libvgcode::GCodeInputData data = libvgcode::convert(gcode_result, str_tool_colors, str_color_print_colors, m_viewer,
                                                         progress_callback);
 
-    // Attach simple wxYield callback for GPU upload phase
-    data.progress_callback = [](float progress)
-    {
-        wxYield();
-    };
+    // Do NOT attach a wxYield callback for the GPU upload phase. The upload
+    // calls glGenBuffers/glBufferData which require a valid GL context. wxYield()
+    // processes pending events, and if a focus-loss event fires during yield,
+    // on_activate(false) releases the GL context via wglMakeCurrent(NULL, NULL),
+    // causing all subsequent GL calls in load() to silently fail. This leaves
+    // the viewer with invalid buffer IDs (0) and an empty preview despite the
+    // legend showing correctly (legend uses CPU-side data only).
+    data.progress_callback = nullptr;
 
     //#define ENABLE_DATA_EXPORT 1
     //#if ENABLE_DATA_EXPORT
@@ -1596,6 +1620,13 @@ void GCodeViewer::load_as_gcode(const GCodeProcessorResult &gcode_result, const 
     //        }
     //    }
     //#endif // ENABLE_DATA_EXPORT
+
+    // Re-acquire the GL context before GPU upload. The wxYield() calls during the
+    // data conversion phase above can process focus-loss events that release the GL
+    // context via wglMakeCurrent(NULL, NULL). ViewerImpl::load() creates GPU buffers
+    // that require a valid context.
+    if (auto *canvas = wxGetApp().plater()->get_current_canvas3D())
+        canvas->ensure_gl_current();
 
     // send data to the viewer
     m_viewer.reset_default_extrusion_roles_colors();

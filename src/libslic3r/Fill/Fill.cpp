@@ -21,6 +21,8 @@
 #include <cassert>
 #include <cinttypes>
 #include <cstdlib>
+#include <cstdio>
+#include <cstdarg>
 
 #include "../ClipperUtils.hpp"
 #include "../Geometry.hpp"
@@ -176,9 +178,127 @@ static inline bool fill_type_monotonic(InfillPattern pattern)
     return pattern == ipMonotonic || pattern == ipMonotonicLines;
 }
 
+// ===================== FILL DEBUG HELPERS =====================
+// Set to true to enable fill pipeline debug output to stdout.
+static constexpr bool FILL_DEBUG = false;
+
+static const char *dbg_stype(SurfaceType t)
+{
+    switch (t)
+    {
+    case stTop:
+        return "stTop";
+    case stBottom:
+        return "stBottom";
+    case stBottomBridge:
+        return "stBottomBridge";
+    case stInternal:
+        return "stInternal";
+    case stInternalSolid:
+        return "stInternalSolid";
+    case stInternalBridge:
+        return "stInternalBridge";
+    case stInternalVoid:
+        return "stInternalVoid";
+    case stPerimeter:
+        return "stPerimeter";
+    case stSolidOverBridge:
+        return "stSolidOverBridge";
+    case stCount:
+        return "stCount";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void dbg_fill_print(const char *fmt, ...)
+{
+    if (!FILL_DEBUG)
+        return;
+    va_list args;
+    va_start(args, fmt);
+    vprintf(fmt, args);
+    va_end(args);
+    fflush(stdout);
+}
+
+static void dbg_fill_input(const Layer &layer)
+{
+    if (!FILL_DEBUG)
+        return;
+    double z = layer.print_z;
+    int lid = (int) layer.id();
+    dbg_fill_print("z=%.3f [FILL] ========== INPUT SURFACES (layer %d, height=%.3f) ==========\n", z, lid,
+                   layer.height);
+    for (size_t region_id = 0; region_id < layer.regions().size(); ++region_id)
+    {
+        const LayerRegion &layerm = *layer.regions()[region_id];
+        int idx = 0;
+        double region_total = 0;
+        for (const Surface &surface : layerm.fill_surfaces())
+        {
+            double a = std::abs(surface.expolygon.area()) * 1e-12;
+            region_total += a;
+            BoundingBox bb = get_extents(surface.expolygon);
+            dbg_fill_print("z=%.3f [FILL] INPUT r=%zu i=%d type=%-18s area=%8.4fmm2 holes=%zu pts=%zu "
+                           "bbox=(%.2f,%.2f)-(%.2f,%.2f) bridge_ang=%.1f\n",
+                           z, region_id, idx, dbg_stype(surface.surface_type), a, surface.expolygon.holes.size(),
+                           surface.expolygon.contour.points.size(), unscaled<double>(bb.min.x()),
+                           unscaled<double>(bb.min.y()), unscaled<double>(bb.max.x()), unscaled<double>(bb.max.y()),
+                           surface.bridge_angle);
+            idx++;
+        }
+        dbg_fill_print("z=%.3f [FILL] INPUT r=%zu TOTAL: %d surfaces, %.4fmm2\n", z, region_id, idx, region_total);
+    }
+}
+
+static void dbg_fill_phase(const char *phase, const Layer &layer, const std::vector<SurfaceFill> &fills)
+{
+    if (!FILL_DEBUG)
+        return;
+    double z = layer.print_z;
+    int lid = (int) layer.id();
+    int total_ep = 0;
+    double total_area = 0;
+    dbg_fill_print("z=%.3f [FILL] ========== %s (layer %d) ==========\n", z, phase, lid);
+    for (size_t i = 0; i < fills.size(); i++)
+    {
+        const SurfaceFill &sf = fills[i];
+        if (sf.expolygons.empty())
+            continue;
+        double sf_area = 0;
+        for (const ExPolygon &ep : sf.expolygons)
+            sf_area += std::abs(ep.area());
+        double sf_area_mm2 = sf_area * 1e-12;
+        total_area += sf_area_mm2;
+        total_ep += (int) sf.expolygons.size();
+        BoundingBox bb = get_extents(sf.expolygons);
+        dbg_fill_print("z=%.3f [FILL] %s [%zu] type=%-18s r=%zu dens=%.1f%% ep=%zu area=%8.4fmm2 "
+                       "bbox=(%.2f,%.2f)-(%.2f,%.2f)\n",
+                       z, phase, i, dbg_stype(sf.surface.surface_type), sf.region_id, sf.params.density,
+                       sf.expolygons.size(), sf_area_mm2, unscaled<double>(bb.min.x()), unscaled<double>(bb.min.y()),
+                       unscaled<double>(bb.max.x()), unscaled<double>(bb.max.y()));
+        for (size_t j = 0; j < sf.expolygons.size(); j++)
+        {
+            const ExPolygon &ep = sf.expolygons[j];
+            double ep_area = std::abs(ep.area()) * 1e-12;
+            BoundingBox epbb = get_extents(ep);
+            dbg_fill_print("z=%.3f [FILL]   %s [%zu][%zu] area=%8.4fmm2 holes=%zu pts=%zu "
+                           "bbox=(%.2f,%.2f)-(%.2f,%.2f)\n",
+                           z, phase, i, j, ep_area, ep.holes.size(), ep.contour.points.size(),
+                           unscaled<double>(epbb.min.x()), unscaled<double>(epbb.min.y()),
+                           unscaled<double>(epbb.max.x()), unscaled<double>(epbb.max.y()));
+        }
+    }
+    dbg_fill_print("z=%.3f [FILL] %s TOTAL: %d expolygons, %.4fmm2\n", z, phase, total_ep, total_area);
+}
+// ===================== END FILL DEBUG HELPERS =====================
+
 std::vector<SurfaceFill> group_fills(const Layer &layer)
 {
     std::vector<SurfaceFill> surface_fills;
+
+    dbg_fill_input(layer);
 
     // First pass: Check if merge is enabled in config and collect top solid surface polygons per region.
     // We always collect top solid polygons (needed for both merge and concentric fallback).
@@ -282,60 +402,6 @@ std::vector<SurfaceFill> group_fills(const Layer &layer)
         return max_found_width < threshold_width;
     };
 
-    // Determine if this layer is part of the "top solid layers" group by checking if stTop exists
-    // on this layer or any layer above. Also calculate distance to the top layer.
-    bool layer_has_top_solid = false;
-    int distance_to_top = -1; // -1 means not part of top solid group
-    {
-        // Check if THIS layer has stTop surfaces
-        for (size_t region_id = 0; region_id < layer.regions().size(); ++region_id)
-        {
-            for (const Surface &surface : layer.regions()[region_id]->fill_surfaces())
-            {
-                if (surface.is_top())
-                {
-                    layer_has_top_solid = true;
-                    distance_to_top = 0;
-                    break;
-                }
-            }
-            if (layer_has_top_solid)
-                break;
-        }
-
-        // If no stTop on this layer, check layers above to find distance to top
-        if (!layer_has_top_solid)
-        {
-            const Layer *check_layer = layer.upper_layer;
-            int dist = 1;
-            while (check_layer != nullptr)
-            {
-                bool found_top = false;
-                for (size_t region_id = 0; region_id < check_layer->regions().size(); ++region_id)
-                {
-                    for (const Surface &surface : check_layer->regions()[region_id]->fill_surfaces())
-                    {
-                        if (surface.is_top())
-                        {
-                            found_top = true;
-                            distance_to_top = dist;
-                            break;
-                        }
-                    }
-                    if (found_top)
-                        break;
-                }
-                if (found_top)
-                    break;
-                check_layer = check_layer->upper_layer;
-                dist++;
-                // Limit search to reasonable range (e.g., 20 layers)
-                if (dist > 20)
-                    break;
-            }
-        }
-    }
-
     // Fill in a map of a region & surface to SurfaceFillParams.
     std::set<SurfaceFillParams> set_surface_params;
     std::vector<std::vector<const SurfaceFillParams *>> region_to_surface_params(
@@ -404,6 +470,9 @@ std::vector<SurfaceFill> group_fills(const Layer &layer)
 
                         if (is_surface_narrow(surface, solid_flow, skip_threshold))
                         {
+                            double a = std::abs(surface.expolygon.area()) * 1e-12;
+                            dbg_fill_print("z=%.3f [FILL] SKIP_NARROW type=%-18s area=%8.4fmm2\n", layer.print_z,
+                                           dbg_stype(surface.surface_type), a);
                             continue; // Skip this surface entirely - too narrow to fill
                         }
                     }
@@ -480,41 +549,8 @@ std::vector<SurfaceFill> group_fills(const Layer &layer)
                 }
                 params.bridge_angle = float(surface.bridge_angle);
                 params.angle = float(Geometry::deg2rad(region_config.fill_angle.value));
-
-                // Visible surfaces (stTop, stBottom) use fill_angle directly.
-                // Internal solid layers alternate 90° based on distance from the visible surface.
-                // This ensures the user-configured fill_angle appears on visible surfaces,
-                // with proper cross-hatching on layers below/above.
-                if (surface.is_solid() && !is_bridge)
-                {
-                    if (surface.is_top() || surface.is_bottom())
-                    {
-                        // Visible top/bottom: use fill_angle directly (no rotation)
-                        // params.angle already set correctly
-                    }
-                    else if (surface.surface_type == stInternalSolid)
-                    {
-                        // Internal solid: calculate rotation based on distance from visible surface
-                        if (distance_to_top >= 0)
-                        {
-                            // Part of top solid layers group - alternate based on distance from top
-                            // distance_to_top=0 means same layer as stTop, distance_to_top=1 means one layer below, etc.
-                            if (distance_to_top % 2 == 1)
-                            {
-                                params.angle += float(M_PI / 2.0); // Odd distance: rotate 90°
-                            }
-                        }
-                        else
-                        {
-                            // Part of bottom solid layers group - alternate based on layer_id
-                            // layer_id=0 is stBottom (visible), layer_id=1 should be rotated, etc.
-                            if (layer.id() % 2 == 1)
-                            {
-                                params.angle += float(M_PI / 2.0); // Odd layer: rotate 90°
-                            }
-                        }
-                    }
-                }
+                // Angle alternation for all surfaces (including solid) is handled by
+                // _layer_angle() in FillBase.cpp during fill generation. No manipulation here.
 
                 // Calculate the actual flow we'll be using for this infill.
                 params.bridge = is_bridge || Fill::use_bridge_flow(params.pattern);
@@ -632,8 +668,13 @@ std::vector<SurfaceFill> group_fills(const Layer &layer)
             }
     }
 
+    dbg_fill_phase("GROUPED", layer, surface_fills);
+
     {
         Polygons all_polygons;
+        // preFlight: Track TopSolidInfill polygons separately so we can apply
+        // clearance only between TopSolid and SolidInfill (not between bridge and solid).
+        Polygons top_solid_polygons;
         for (SurfaceFill &fill : surface_fills)
             if (!fill.expolygons.empty())
             {
@@ -643,17 +684,19 @@ std::vector<SurfaceFill> group_fills(const Layer &layer)
                     // Make a union of polygons, use a safety offset, subtract the preceding polygons.
                     // Bridges are processed first (see SurfaceFill::operator<())
 
-                    // When trimming solid infill, add clearance to prevent overlap after both surfaces
-                    // expand by outer_offset during fill generation. Without clearance, edge-to-edge
-                    // surfaces both expand toward the shared boundary and overlap by ~1 bead width.
+                    // When trimming SolidInfill, add clearance only against TopSolidInfill regions
+                    // to prevent overlap where both expand during fill generation. Don't apply
+                    // clearance against bridge/InfillOverBridge - those should seamlessly abut
+                    // with internal solid to avoid leaving unfilled holes.
                     Polygons trim_polygons = all_polygons;
                     if (!all_polygons.empty() && fill.params.extrusion_role == ExtrusionRole::SolidInfill &&
-                        fill.params.density > 0.99f)
+                        fill.params.density > 0.99f && !top_solid_polygons.empty())
                     {
-                        // Add 25% bead width clearance when trimming non-adjacent solid infill
-                        // This prevents overlap when both TopSolid and InternalSolid expand during fill
                         const float clearance = float(fill.params.flow.width() * 0.25);
-                        trim_polygons = offset(all_polygons, scale_(clearance));
+                        Polygons top_expanded = offset(top_solid_polygons, scale_(clearance));
+                        // Combine: non-top fills at original size + top fills with clearance
+                        Polygons non_top = diff(all_polygons, top_solid_polygons);
+                        trim_polygons = union_(non_top, top_expanded);
                     }
 
                     fill.expolygons = all_polygons.empty() ? union_safety_offset_ex(polys)
@@ -662,8 +705,429 @@ std::vector<SurfaceFill> group_fills(const Layer &layer)
                 }
                 else if (&fill != &surface_fills.back())
                     append(all_polygons, to_polygons(fill.expolygons));
+
+                // Track TopSolidInfill polygons for targeted clearance
+                if (fill.params.extrusion_role == ExtrusionRole::TopSolidInfill)
+                    append(top_solid_polygons, to_polygons(fill.expolygons));
             }
     }
+
+    dbg_fill_phase("TRIMMED", layer, surface_fills);
+
+    // preFlight: Compute the total fill boundary from the layer's fill_expolygons - the area
+    // inside the innermost perimeters. This is the true boundary for all fills, unaffected by
+    // inter-fill trimming (which introduces safety-offset micro-gaps). Grow/union/shrink can
+    // push geometry beyond fill boundaries into perimeter territory, so we clip results back
+    // to this boundary after each merge operation.
+    Polygons total_fill_boundary;
+    for (size_t region_id = 0; region_id < layer.regions().size(); ++region_id)
+        append(total_fill_boundary, to_polygons(layer.regions()[region_id]->fill_expolygons()));
+    total_fill_boundary = union_(total_fill_boundary);
+
+    // preFlight: Compute the sparse fill threshold once - used for hole removal
+    // and sparse absorption below. Based on the sparse fill's actual line spacing so it
+    // adapts to different infill densities and nozzle sizes.
+    double sparse_min_area = 0;
+    float sparse_erode_radius = 0;
+    for (const SurfaceFill &sf : surface_fills)
+        if (sf.surface.surface_type == stInternal && !sf.expolygons.empty() && sf.params.density < 99.f)
+        {
+            const float line_spacing = float(scale_(sf.params.spacing)) / (sf.params.density / 100.f);
+            sparse_min_area = double(line_spacing) * double(line_spacing) * 16.0;
+            sparse_erode_radius = line_spacing * 0.75f;
+            break;
+        }
+
+    // preFlight: Consolidate all stSolidOverBridge SurfaceFill entries into one.
+    // mark_as_infill_above_bridge() assigns different bridge_angles to fragments,
+    // causing group_fills to place them in separate SurfaceFill entries. Merge them
+    // so all subsequent processing (hole removal, absorption, grow/union/shrink) operates
+    // on a single unified stSolidOverBridge region.
+    {
+        SurfaceFill *primary_sob = nullptr;
+        double primary_area = 0;
+        for (SurfaceFill &sf : surface_fills)
+        {
+            if (sf.expolygons.empty() || sf.surface.surface_type != stSolidOverBridge)
+                continue;
+            double total_area = 0;
+            for (const ExPolygon &ep : sf.expolygons)
+                total_area += std::abs(ep.area());
+            if (!primary_sob || total_area > primary_area)
+            {
+                primary_sob = &sf;
+                primary_area = total_area;
+            }
+        }
+        if (primary_sob)
+        {
+            for (SurfaceFill &sf : surface_fills)
+            {
+                if (&sf == primary_sob || sf.expolygons.empty() || sf.surface.surface_type != stSolidOverBridge)
+                    continue;
+                append(primary_sob->expolygons, std::move(sf.expolygons));
+                sf.expolygons.clear();
+            }
+            primary_sob->expolygons = union_ex(primary_sob->expolygons);
+        }
+    }
+
+    dbg_fill_phase("SOB_CONSOLIDATED", layer, surface_fills);
+
+    // preFlight: Remove small holes from stInternalSolid ExPolygons.
+    // These holes come from trimming against bridge/top fills but are too small for
+    // those fills to generate meaningful lines, leaving dark unfilled gaps.
+    // Only remove holes that aren't occupied by another fill (stTop, bridge, etc.).
+    if (sparse_min_area > 0)
+    {
+        Polygons other_fill_polys;
+        for (const SurfaceFill &sf : surface_fills)
+            if (sf.surface.surface_type != stInternalSolid && sf.surface.surface_type != stInternal &&
+                !sf.expolygons.empty())
+                append(other_fill_polys, to_polygons(sf.expolygons));
+
+        for (SurfaceFill &fill : surface_fills)
+        {
+            if (fill.expolygons.empty() || fill.surface.surface_type != stInternalSolid)
+                continue;
+            for (ExPolygon &ep : fill.expolygons)
+                ep.holes.erase(
+                    std::remove_if(ep.holes.begin(), ep.holes.end(),
+                                   [sparse_min_area, &other_fill_polys](const Polygon &hole)
+                                   {
+                                       if (std::abs(hole.area()) >= sparse_min_area)
+                                           return false;
+                                       // Keep the hole if another fill occupies it
+                                       Polygon contour = hole;
+                                       contour.reverse();
+                                       return intersection_ex(ExPolygons{ExPolygon(contour)}, other_fill_polys).empty();
+                                   }),
+                    ep.holes.end());
+        }
+    }
+
+    dbg_fill_phase("HOLES_RM_SOLID", layer, surface_fills);
+
+    // preFlight: Remove thin holes from stSolidOverBridge ExPolygons.
+    // The surface classification creates stSolidOverBridge with holes for model features
+    // (arcs, crescents, through-holes). Thin features like arcs and crescents are too
+    // narrow for any fill to produce lines, leaving dark gaps. Remove holes that vanish
+    // under erosion (too thin) while keeping thick ones (through-holes that bridge fills).
+    if (sparse_erode_radius > 0)
+        for (SurfaceFill &fill : surface_fills)
+        {
+            if (fill.surface.surface_type != stSolidOverBridge || fill.expolygons.empty())
+                continue;
+            for (ExPolygon &ep : fill.expolygons)
+            {
+                Polygons kept_holes;
+                for (const Polygon &hole : ep.holes)
+                {
+                    // Reverse hole orientation (CW -> CCW) to create a testable ExPolygon.
+                    Polygon contour = hole;
+                    contour.reverse();
+                    // Erosion test: if the hole shape vanishes, it's too thin to keep.
+                    ExPolygons eroded = opening_ex(ExPolygons{ExPolygon(contour)}, sparse_erode_radius);
+                    if (!eroded.empty())
+                        kept_holes.push_back(hole);
+                }
+                ep.holes = std::move(kept_holes);
+            }
+        }
+
+    dbg_fill_phase("HOLES_RM_SOB", layer, surface_fills);
+
+    // preFlight: Transfer stInternalSolid that physically touches stSolidOverBridge into SOB.
+    // Surface classification splits solid areas into SOB (above bridge) and InternalSolid (other).
+    // When these are adjacent, filling them separately leaves thin gaps (e.g. arc-shaped voids
+    // around hole features) that are too narrow for sparse fill. Merging adjacent pieces into
+    // SOB lets the subsequent grow/union/shrink heal these gaps.
+    // Only transfer InternalSolid that geometrically touches SOB - never reclassify
+    // distant pieces that happen to share the same layer.
+    {
+        SurfaceFill *sob_fill = nullptr;
+        for (SurfaceFill &sf : surface_fills)
+            if (sf.surface.surface_type == stSolidOverBridge && !sf.expolygons.empty())
+            {
+                sob_fill = &sf;
+                break;
+            }
+        if (sob_fill)
+        {
+            // Grow SOB slightly to detect touching/near-touching InternalSolid.
+            // 0.1mm bridges classification micro-gaps without reaching distant pieces.
+            Polygons sob_grown = offset(to_polygons(sob_fill->expolygons), scale_(0.1));
+
+            bool merged = false;
+            for (SurfaceFill &sf : surface_fills)
+            {
+                if (&sf == sob_fill || sf.surface.surface_type != stInternalSolid || sf.expolygons.empty())
+                    continue;
+                ExPolygons to_transfer;
+                ExPolygons to_keep;
+                for (const ExPolygon &ep : sf.expolygons)
+                {
+                    if (!intersection_ex(ExPolygons{ep}, sob_grown).empty())
+                        to_transfer.push_back(ep);
+                    else
+                        to_keep.push_back(ep);
+                }
+                if (!to_transfer.empty())
+                {
+                    sf.expolygons = std::move(to_keep);
+                    append(sob_fill->expolygons, std::move(to_transfer));
+                    merged = true;
+                }
+            }
+            if (merged)
+                sob_fill->expolygons = union_ex(sob_fill->expolygons);
+        }
+    }
+
+    dbg_fill_phase("ADJACENCY_XFER", layer, surface_fills);
+
+    // preFlight: After stSolidOverBridge modifications (hole removal + thin region merge),
+    // re-trim fills that were trimmed against the original stSolidOverBridge. The expanded
+    // coverage now overlaps with remaining stInternalSolid and sparse fills.
+    {
+        Polygons sob_polys;
+        for (const SurfaceFill &sf : surface_fills)
+            if (sf.surface.surface_type == stSolidOverBridge && !sf.expolygons.empty())
+                append(sob_polys, to_polygons(sf.expolygons));
+        if (!sob_polys.empty())
+            for (SurfaceFill &sf : surface_fills)
+            {
+                if (sf.expolygons.empty())
+                    continue;
+                if (sf.surface.surface_type == stInternalSolid || sf.surface.surface_type == stInternal)
+                    sf.expolygons = diff_ex(sf.expolygons, sob_polys);
+            }
+    }
+
+    dbg_fill_phase("SOB_RETRIM", layer, surface_fills);
+
+    // preFlight: Absorb small sparse infill regions that are fully enclosed by solid infill.
+    // These regions are too small for meaningful sparse fill lines and appear as unfilled holes
+    // within solid infill areas. Only absorb regions entirely inside a solid contour - never
+    // expand into external sparse areas at the solid boundary.
+    for (SurfaceFill &solid_fill : surface_fills)
+    {
+        if (solid_fill.expolygons.empty())
+            continue;
+        if (solid_fill.surface.surface_type != stInternalSolid && solid_fill.surface.surface_type != stSolidOverBridge)
+            continue;
+
+        // Build the "filled" solid boundary from contours only (no holes).
+        // For stInternalSolid: contours already encompass the sparse pockets (one big region
+        // with holes carved out), so stripping holes and unioning is sufficient.
+        // For stSolidOverBridge: mark_as_infill_above_bridge() fragments the solid into
+        // disjoint pieces covering only areas above bridge extrusions. Sparse pockets sit
+        // in gaps between fragments. Morphological closing (dilate + erode) bridges these
+        // inter-fragment gaps to reconstruct the encompassing boundary.
+        ExPolygons solid_filled;
+        if (solid_fill.surface.surface_type == stSolidOverBridge && sparse_erode_radius > 0)
+        {
+            Polygons sob_contours;
+            for (const ExPolygon &ep : solid_fill.expolygons)
+                sob_contours.push_back(ep.contour);
+            solid_filled = closing_ex(sob_contours, sparse_erode_radius);
+        }
+        else
+        {
+            solid_filled.reserve(solid_fill.expolygons.size());
+            for (const ExPolygon &ep : solid_fill.expolygons)
+                solid_filled.emplace_back(ep.contour);
+            solid_filled = union_ex(solid_filled);
+        }
+
+        for (SurfaceFill &sparse_fill : surface_fills)
+        {
+            if (sparse_fill.surface.surface_type != stInternal || sparse_fill.expolygons.empty())
+                continue;
+            if (sparse_fill.params.density >= 99.f)
+                continue;
+
+            // Threshold: area that can't fit meaningful sparse fill.
+            // line_spacing is the actual distance between sparse fill lines.
+            // A region needs at least ~4x4 grid of lines to be useful.
+            const float line_spacing = float(scale_(sparse_fill.params.spacing)) / (sparse_fill.params.density / 100.f);
+            const double min_area = double(line_spacing) * double(line_spacing) * 16.0;
+
+            ExPolygons to_absorb;
+            ExPolygons to_keep;
+
+            for (const ExPolygon &ep : sparse_fill.expolygons)
+            {
+                double area = std::abs(ep.area());
+                if (area >= min_area)
+                {
+                    to_keep.push_back(ep);
+                    continue;
+                }
+
+                // Check if this small sparse region is fully enclosed by this solid fill.
+                // If the intersection with the solid contours covers >= 90% of the sparse
+                // region's area, it's an internal pocket that should be filled solid.
+                double contained_area = 0;
+                for (const ExPolygon &c : intersection_ex(ExPolygons{ep}, solid_filled))
+                    contained_area += std::abs(c.area());
+
+                if (contained_area >= area * 0.9)
+                    to_absorb.push_back(ep);
+                else
+                    to_keep.push_back(ep);
+            }
+
+            if (!to_absorb.empty())
+            {
+                sparse_fill.expolygons = std::move(to_keep);
+                append(solid_fill.expolygons, std::move(to_absorb));
+                solid_fill.expolygons = union_ex(solid_fill.expolygons);
+            }
+        }
+
+        // preFlight: Merge nearby solid ExPolygons into a unified region. Grow/union/shrink
+        // bridges micro-gaps between fragments that plain union can't bridge.
+        // stSolidOverBridge uses sparse_erode_radius (gaps proportional to sparse spacing).
+        // stInternalSolid uses 1x extrusion width (small classification gaps).
+        if (solid_fill.expolygons.size() > 1)
+        {
+            const float merge_delta = (solid_fill.surface.surface_type == stSolidOverBridge && sparse_erode_radius > 0)
+                                          ? sparse_erode_radius
+                                          : float(scale_(solid_fill.params.flow.width()));
+            Polygons grown;
+            for (const ExPolygon &ep : solid_fill.expolygons)
+                append(grown, offset(ep, merge_delta));
+            solid_fill.expolygons = intersection_ex(offset_ex(union_(grown), -merge_delta), total_fill_boundary);
+        }
+    }
+
+    dbg_fill_phase("ABSORBED_GROWN", layer, surface_fills);
+
+    // preFlight: After grow/union/shrink, solid fills may have expanded into adjacent fills.
+    // Re-trim to prevent overlaps: solid fills against each other (priority to earlier entries),
+    // then sparse fills against all expanded solid fills.
+    {
+        Polygons processed_solid;
+        for (SurfaceFill &sf : surface_fills)
+        {
+            if (sf.expolygons.empty())
+                continue;
+            if (sf.surface.surface_type != stInternalSolid && sf.surface.surface_type != stSolidOverBridge)
+                continue;
+            if (!processed_solid.empty())
+                sf.expolygons = diff_ex(sf.expolygons, processed_solid);
+            append(processed_solid, to_polygons(sf.expolygons));
+        }
+        if (!processed_solid.empty())
+            for (SurfaceFill &sf : surface_fills)
+                if (sf.surface.surface_type == stInternal && !sf.expolygons.empty())
+                    sf.expolygons = diff_ex(sf.expolygons, processed_solid);
+    }
+
+    dbg_fill_phase("RETRIMMED", layer, surface_fills);
+
+    // preFlight: Remove tiny stSolidOverBridge expolygons that are too small for meaningful
+    // fill lines. The grow/union/shrink merge can leave behind small fragments near tight
+    // features (screw holes, pegs) that overlap perimeters when filled.
+    // Use solid fill spacing (not sparse) for the threshold - stSolidOverBridge is 100% density
+    // so even small areas produce valid fill. The sparse_min_area threshold (~127mm2 at 16%
+    // density) was wildly too large and deleted legitimate SOB regions.
+    {
+        double sob_min_area = 0;
+        for (const SurfaceFill &sf : surface_fills)
+            if (sf.surface.surface_type == stSolidOverBridge && !sf.expolygons.empty())
+            {
+                // Solid fill at 100% density: minimum useful area is a few line widths squared.
+                // Use scale_() so area threshold is in nm^2 like ep.area().
+                double solid_spacing = scale_(sf.params.spacing);
+                sob_min_area = solid_spacing * solid_spacing * 4.0; // 2x2 line grid
+                break;
+            }
+        if (sob_min_area > 0)
+            for (SurfaceFill &sf : surface_fills)
+                if (sf.surface.surface_type == stSolidOverBridge && !sf.expolygons.empty())
+                    sf.expolygons.erase(std::remove_if(sf.expolygons.begin(), sf.expolygons.end(),
+                                                       [sob_min_area](const ExPolygon &ep)
+                                                       { return std::abs(ep.area()) < sob_min_area; }),
+                                        sf.expolygons.end());
+    }
+
+    dbg_fill_phase("TINY_SOB_RM", layer, surface_fills);
+
+    // preFlight: Merge fragmented bridge infill into a unified region.
+    // Bridge detection creates separate ExPolygons for bridge-over-open-space (stBottomBridge)
+    // and bridge-over-sparse (stInternalBridge) with different angles. Merge all bridge fills
+    // into one SurfaceFill, preferring stBottomBridge's angle (optimized for anchoring over
+    // open spans). Apply grow/union/shrink to bridge micro-gaps between fragments.
+    if (sparse_erode_radius > 0)
+    {
+        // Find all bridge SurfaceFill entries and select the primary (winning) one.
+        // Prefer stBottomBridge (bridge-over-open-space) with the largest total area.
+        SurfaceFill *primary_bridge = nullptr;
+        double primary_area = 0;
+        for (SurfaceFill &sf : surface_fills)
+        {
+            if (sf.expolygons.empty() || !sf.surface.is_bridge())
+                continue;
+            double total_area = 0;
+            for (const ExPolygon &ep : sf.expolygons)
+                total_area += std::abs(ep.area());
+            // stBottomBridge always wins over stInternalBridge; among same type, largest area wins
+            bool dominated = primary_bridge && primary_bridge->surface.surface_type == stBottomBridge &&
+                             sf.surface.surface_type != stBottomBridge;
+            bool dominates = !primary_bridge ||
+                             (sf.surface.surface_type == stBottomBridge &&
+                              primary_bridge->surface.surface_type != stBottomBridge) ||
+                             (sf.surface.surface_type == primary_bridge->surface.surface_type &&
+                              total_area > primary_area);
+            if (!dominated && dominates)
+            {
+                primary_bridge = &sf;
+                primary_area = total_area;
+            }
+        }
+
+        if (primary_bridge)
+        {
+            // Merge all other bridge ExPolygons into the primary
+            bool merged = false;
+            for (SurfaceFill &sf : surface_fills)
+            {
+                if (&sf == primary_bridge || sf.expolygons.empty() || !sf.surface.is_bridge())
+                    continue;
+                append(primary_bridge->expolygons, std::move(sf.expolygons));
+                sf.expolygons.clear();
+                merged = true;
+            }
+
+            // Grow/union/shrink to bridge micro-gaps between fragments
+            if (primary_bridge->expolygons.size() > 1)
+            {
+                const float merge_delta = float(scale_(primary_bridge->params.flow.width()));
+                Polygons grown;
+                for (const ExPolygon &ep : primary_bridge->expolygons)
+                    append(grown, offset(ep, merge_delta));
+                primary_bridge->expolygons = intersection_ex(offset_ex(union_(grown), -merge_delta),
+                                                             total_fill_boundary);
+            }
+
+            // Re-trim adjacent fills against the expanded bridge region to prevent overlap
+            if (merged)
+            {
+                Polygons bridge_polys = to_polygons(primary_bridge->expolygons);
+                if (!bridge_polys.empty())
+                    for (SurfaceFill &sf : surface_fills)
+                    {
+                        if (&sf == primary_bridge || sf.expolygons.empty() || sf.surface.is_bridge())
+                            continue;
+                        sf.expolygons = diff_ex(sf.expolygons, bridge_polys);
+                    }
+            }
+        }
+    }
+
+    dbg_fill_phase("BRIDGE_MERGED", layer, surface_fills);
 
     // we need to detect any narrow surfaces that might collapse
     // when adding spacing below
@@ -767,6 +1231,8 @@ std::vector<SurfaceFill> group_fills(const Layer &layer)
             }
     }
     */
+
+    dbg_fill_phase("FINAL", layer, surface_fills);
 
     return surface_fills;
 }
@@ -1591,9 +2057,12 @@ void Layer::make_fills(FillAdaptive::Octree *adaptive_fill_octree, FillAdaptive:
                 // CRITICAL: Perimeters structure is Collection-of-Collections, must wrap in ExtrusionEntityCollection
                 if (!interlocking_collection.empty())
                 {
+                    // Chain interlocking perimeters by nearest-neighbor for minimal travel
+                    chain_and_reorder_extrusion_entities(interlocking_collection.entities);
+
                     // Wrap interlocking perimeters in collection (perimeters require nested collections)
                     ExtrusionEntityCollection *perimeter_collection = new ExtrusionEntityCollection();
-                    perimeter_collection->no_sort = true; // Preserve the order we set via perimeter_index
+                    perimeter_collection->no_sort = true; // Preserve the chained order during GCode generation
                     perimeter_collection->entities = std::move(interlocking_collection.entities);
 
                     // CRITICAL: Islands have non-contiguous indices in m_perimeters. If we APPEND the interlocking
@@ -1695,9 +2164,10 @@ void Layer::make_fills(FillAdaptive::Octree *adaptive_fill_octree, FillAdaptive:
     }
 #endif /* SLIC3R_DEBUG_SLICE_PROCESSING */
 
-    size_t first_object_layer_id = this->object()->get_layer(0)->id();
+    // Debug: dump surface_fills after interlocking consumption (what actually gets filled)
+    dbg_fill_phase("PRE_FILL", *this, surface_fills);
 
-    // Process each island first (matches interlocking perimeter architecture).
+    size_t first_object_layer_id = this->object()->get_layer(0)->id();
     // Each island's infill is generated and filled completely before moving to the next island,
     // eliminating chaotic back-and-forth travel caused by global generation + spatial division.
 
@@ -1720,6 +2190,20 @@ void Layer::make_fills(FillAdaptive::Octree *adaptive_fill_octree, FillAdaptive:
 
                 if (island_expolygons.empty())
                     continue;
+
+                if (FILL_DEBUG)
+                {
+                    double isl_area = 0;
+                    for (const ExPolygon &ep : island_expolygons)
+                        isl_area += std::abs(ep.area());
+                    BoundingBox ibb = get_extents(island_expolygons);
+                    dbg_fill_print("z=%.3f [FILL] ISLAND_FILL type=%-18s ep=%zu area=%8.4fmm2 "
+                                   "bbox=(%.2f,%.2f)-(%.2f,%.2f)\n",
+                                   this->print_z, dbg_stype(surface_fill.surface.surface_type),
+                                   island_expolygons.size(), isl_area * 1e-12, unscaled<double>(ibb.min.x()),
+                                   unscaled<double>(ibb.min.y()), unscaled<double>(ibb.max.x()),
+                                   unscaled<double>(ibb.max.y()));
+                }
 
                 // Create the filler object for this surface type
                 std::unique_ptr<Fill> f = std::unique_ptr<Fill>(Fill::new_from_type(surface_fill.params.pattern));
@@ -1800,7 +2284,6 @@ void Layer::make_fills(FillAdaptive::Octree *adaptive_fill_octree, FillAdaptive:
 
                 // Create ONE collection for all fills in this island
                 ExtrusionEntityCollection *eec = new ExtrusionEntityCollection();
-                eec->no_sort = true; // Prevent re-sorting that would destroy region-by-region order
 
                 // Initialize to perimeter endpoint - that's where the nozzle is when infill starts
                 Point last_fill_pos = Point(0, 0);
@@ -1823,110 +2306,205 @@ void Layer::make_fills(FillAdaptive::Octree *adaptive_fill_octree, FillAdaptive:
                     }
                 }
 
-                // Process each disconnected region (ExPolygon) in the island
-                for (ExPolygon &expoly : island_expolygons)
+                // Monotonic fills must preserve their ant-colony sweep ordering within
+                // each ExPolygon. Non-monotonic fills can be freely reordered across
+                // ExPolygon boundaries for better travel optimization.
+                const bool is_monotonic_fill = fill_type_monotonic(surface_fill.params.pattern);
+                // Solid fills produce long connected zigzag polylines that must stay intact
+                // per-ExPolygon; cross-fragment chaining corrupts traverse graph connections.
+                const bool use_per_expolygon_path = is_monotonic_fill || surface_fill.params.density > 99.f;
+
+                if (use_per_expolygon_path || params.use_advanced_perimeters)
                 {
-                    // Spacing is modified by the filler to indicate adjustments. Reset it for each expolygon.
-                    f->spacing = surface_fill.params.spacing;
-                    // For bridges: use original flow width (bridge diameter) so boundary offset is independent of line spacing
-                    // For non-bridges: use spacing (normal behavior)
-                    f->bounding_width = surface_fill.params.bridge ? surface_fill.params.flow.width()
-                                                                   : surface_fill.params.spacing;
+                    // MONOTONIC / ADVANCED PATH: per-ExPolygon entity creation preserves ordering
+                    for (ExPolygon &expoly : island_expolygons)
+                    {
+                        f->spacing = surface_fill.params.spacing;
+                        f->bounding_width = surface_fill.params.bridge ? surface_fill.params.flow.width()
+                                                                       : surface_fill.params.spacing;
+                        params.start_near = have_last_pos ? last_fill_pos : expoly.contour.centroid();
 
-                    // Use last fill endpoint if available, otherwise use perimeter endpoint or centroid
-                    if (have_last_pos)
-                    {
-                        params.start_near = last_fill_pos;
-                    }
-                    else
-                    {
-                        params.start_near = expoly.contour.centroid();
-                    }
-
-                    surface_fill.surface.expolygon = std::move(expoly);
-                    Polylines polylines;
-                    ThickPolylines thick_polylines;
-                    try
-                    {
-                        if (params.use_advanced_perimeters)
-                            thick_polylines = f->fill_surface_advanced(&surface_fill.surface, params);
-                        else
-                            polylines = f->fill_surface(&surface_fill.surface, params);
-                    }
-                    catch (InfillFailedException &)
-                    {
-                    }
-
-                    if (!polylines.empty())
-                    {
-                        last_fill_pos = polylines.back().last_point();
-                        have_last_pos = true;
-                    }
-                    else if (!thick_polylines.empty())
-                    {
-                        last_fill_pos = thick_polylines.back().last_point();
-                        have_last_pos = true;
-                    }
-
-                    // Process this region's infill immediately - fill it completely
-                    if (!polylines.empty() || !thick_polylines.empty())
-                    {
-                        // calculate actual flow from spacing
-                        double flow_mm3_per_mm = surface_fill.params.flow.mm3_per_mm();
-                        double flow_width = surface_fill.params.flow.width();
-                        // with_spacing() uses rounded rectangle formula which is wrong for bridges
-                        // (bridges use circular cross-section). Skip width recalculation for bridges.
-                        if (using_internal_flow || surface_fill.params.bridge)
+                        surface_fill.surface.expolygon = std::move(expoly);
+                        Polylines polylines;
+                        ThickPolylines thick_polylines;
+                        try
                         {
-                            // For internal flow: ignore slight spacing variations
-                            // For bridges: width is already correct (circular cross-section)
+                            if (params.use_advanced_perimeters)
+                                thick_polylines = f->fill_surface_advanced(&surface_fill.surface, params);
+                            else
+                                polylines = f->fill_surface(&surface_fill.surface, params);
                         }
-                        else
+                        catch (InfillFailedException &)
                         {
-                            Flow new_flow = surface_fill.params.flow.with_spacing(float(f->spacing));
-                            flow_mm3_per_mm = new_flow.mm3_per_mm();
-                            flow_width = new_flow.width();
+                            dbg_fill_print("z=%.3f [FILL] FILL_EXCEPTION type=%-18s InfillFailedException!\n",
+                                           this->print_z, dbg_stype(surface_fill.surface.surface_type));
                         }
 
-                        if (params.use_advanced_perimeters)
+                        if (!polylines.empty())
                         {
-                            for (const ThickPolyline &thick_polyline : thick_polylines)
+                            last_fill_pos = polylines.back().last_point();
+                            have_last_pos = true;
+                        }
+                        else if (!thick_polylines.empty())
+                        {
+                            last_fill_pos = thick_polylines.back().last_point();
+                            have_last_pos = true;
+                        }
+
+                        if (!polylines.empty() || !thick_polylines.empty())
+                        {
+                            double flow_mm3_per_mm = surface_fill.params.flow.mm3_per_mm();
+                            double flow_width = surface_fill.params.flow.width();
+                            if (using_internal_flow || surface_fill.params.bridge)
                             {
-                                Flow new_flow = surface_fill.params.bridge
-                                                    ? surface_fill.params.flow
-                                                    : surface_fill.params.flow.with_spacing(float(f->spacing));
+                            }
+                            else
+                            {
+                                Flow new_flow = surface_fill.params.flow.with_spacing(float(f->spacing));
+                                flow_mm3_per_mm = new_flow.mm3_per_mm();
+                                flow_width = new_flow.width();
+                            }
 
-                                ExtrusionMultiPath multi_path = PerimeterGenerator::thick_polyline_to_multi_path(
-                                    thick_polyline, surface_fill.params.extrusion_role, new_flow, scaled<float>(0.05),
-                                    float(SCALED_EPSILON));
-                                if (!multi_path.empty())
+                            if (params.use_advanced_perimeters)
+                            {
+                                for (const ThickPolyline &thick_polyline : thick_polylines)
                                 {
-                                    if (multi_path.paths.front().first_point() == multi_path.paths.back().last_point())
-                                        eec->entities.emplace_back(new ExtrusionLoop(std::move(multi_path.paths)));
-                                    else
-                                        eec->entities.emplace_back(new ExtrusionMultiPath(std::move(multi_path)));
+                                    Flow new_flow = surface_fill.params.bridge
+                                                        ? surface_fill.params.flow
+                                                        : surface_fill.params.flow.with_spacing(float(f->spacing));
+                                    ExtrusionMultiPath multi_path = PerimeterGenerator::thick_polyline_to_multi_path(
+                                        thick_polyline, surface_fill.params.extrusion_role, new_flow,
+                                        scaled<float>(0.05), float(SCALED_EPSILON));
+                                    if (!multi_path.empty())
+                                    {
+                                        if (multi_path.paths.front().first_point() ==
+                                            multi_path.paths.back().last_point())
+                                            eec->entities.emplace_back(new ExtrusionLoop(std::move(multi_path.paths)));
+                                        else
+                                            eec->entities.emplace_back(new ExtrusionMultiPath(std::move(multi_path)));
+                                    }
                                 }
                             }
+                            else
+                            {
+                                extrusion_entities_append_paths(
+                                    eec->entities, std::move(polylines),
+                                    ExtrusionAttributes{surface_fill.params.extrusion_role,
+                                                        ExtrusionFlow{flow_mm3_per_mm, float(flow_width),
+                                                                      surface_fill.params.flow.height()},
+                                                        f->is_self_crossing()},
+                                    !params.prefer_clockwise_movements);
+                            }
                         }
-                        else
+                    }
+                    // Entity-level reorder (safe for monotonic - respects can_reverse)
+                    if (eec->entities.size() > 1)
+                    {
+                        const Point *start = have_last_pos ? &last_fill_pos : nullptr;
+                        chain_and_reorder_extrusion_entities(eec->entities, start);
+                    }
+                }
+                else
+                {
+                    // NON-MONOTONIC PATH: batch polylines across fragments for cross-fragment chaining.
+                    // Tag each polyline with its originating ExPolygon's flow for correct extrusion.
+                    struct PolylineFlowTag
+                    {
+                        double mm3_per_mm;
+                        float width;
+                        bool self_crossing;
+                    };
+                    Polylines all_polylines;
+                    std::vector<PolylineFlowTag> flow_tags;
+
+                    for (ExPolygon &expoly : island_expolygons)
+                    {
+                        f->spacing = surface_fill.params.spacing;
+                        f->bounding_width = surface_fill.params.bridge ? surface_fill.params.flow.width()
+                                                                       : surface_fill.params.spacing;
+                        params.start_near = have_last_pos ? last_fill_pos : expoly.contour.centroid();
+
+                        surface_fill.surface.expolygon = std::move(expoly);
+                        Polylines polylines;
+                        try
                         {
-                            // Add this region's polylines to the collection (already optimized by fill_surface)
-                            extrusion_entities_append_paths(
-                                eec->entities, std::move(polylines),
-                                ExtrusionAttributes{surface_fill.params.extrusion_role,
-                                                    ExtrusionFlow{flow_mm3_per_mm, float(flow_width),
-                                                                  surface_fill.params.flow.height()},
-                                                    f->is_self_crossing()},
-                                !params.prefer_clockwise_movements);
+                            polylines = f->fill_surface(&surface_fill.surface, params);
+                        }
+                        catch (InfillFailedException &)
+                        {
+                            dbg_fill_print("z=%.3f [FILL] FILL_EXCEPTION type=%-18s InfillFailedException!\n",
+                                           this->print_z, dbg_stype(surface_fill.surface.surface_type));
+                        }
+
+                        if (!polylines.empty())
+                        {
+                            last_fill_pos = polylines.back().last_point();
+                            have_last_pos = true;
+
+                            // Compute this ExPolygon's adjusted flow
+                            double ep_mm3 = surface_fill.params.flow.mm3_per_mm();
+                            float ep_width = float(surface_fill.params.flow.width());
+                            if (!using_internal_flow && !surface_fill.params.bridge)
+                            {
+                                Flow adj = surface_fill.params.flow.with_spacing(float(f->spacing));
+                                ep_mm3 = adj.mm3_per_mm();
+                                ep_width = float(adj.width());
+                            }
+                            bool ep_self_crossing = f->is_self_crossing();
+
+                            // Tag each polyline with its origin ExPolygon's flow
+                            for (size_t i = 0; i < polylines.size(); ++i)
+                                flow_tags.push_back({ep_mm3, ep_width, ep_self_crossing});
+                            append(all_polylines, std::move(polylines));
+                        }
+                    }
+
+                    // Chain all polylines across ExPolygon fragment boundaries with 2-opt,
+                    // using index tracking to preserve per-polyline flow tags.
+                    if (!all_polylines.empty())
+                    {
+                        const Point *chain_start = have_last_pos ? &last_fill_pos : nullptr;
+                        auto [chained, index_map] = chain_polylines_with_indices(std::move(all_polylines), chain_start);
+
+                        // Reorder flow tags to match the chained polyline order
+                        std::vector<PolylineFlowTag> reordered_tags;
+                        reordered_tags.reserve(index_map.size());
+                        for (size_t orig_idx : index_map)
+                            reordered_tags.push_back(flow_tags[orig_idx]);
+
+                        // Convert to extrusion entities with correct per-polyline flow
+                        for (size_t i = 0; i < chained.size(); ++i)
+                        {
+                            if (chained[i].size() < 2)
+                                continue;
+                            const auto &tag = reordered_tags[i];
+                            ExtrusionAttributes attrs{surface_fill.params.extrusion_role,
+                                                      ExtrusionFlow{tag.mm3_per_mm, tag.width,
+                                                                    surface_fill.params.flow.height()},
+                                                      tag.self_crossing};
+                            // !prefer_clockwise_movements -> can_reverse=true -> ExtrusionPath
+                            // prefer_clockwise_movements -> can_reverse=false -> ExtrusionPathOriented
+                            if (!params.prefer_clockwise_movements)
+                                eec->entities.emplace_back(new ExtrusionPath(std::move(chained[i]), attrs));
+                            else
+                                eec->entities.emplace_back(new ExtrusionPathOriented(std::move(chained[i]), attrs));
                         }
                     }
                 }
 
                 // Add the collection to the layer (if it has any fills)
                 if (!eec->empty())
+                {
+                    dbg_fill_print("z=%.3f [FILL] FILL_OK type=%-18s entities=%zu\n", this->print_z,
+                                   dbg_stype(surface_fill.surface.surface_type), eec->entities.size());
                     layerm->m_fills.entities.push_back(eec);
+                }
                 else
+                {
+                    dbg_fill_print("z=%.3f [FILL] FILL_EMPTY type=%-18s (no extrusions generated)\n", this->print_z,
+                                   dbg_stype(surface_fill.surface.surface_type));
                     delete eec;
+                }
 
                 uint32_t fill_end = uint32_t(layerm->m_fills.entities.size());
 

@@ -719,4 +719,108 @@ void GCodeFormatter::emit_axis(const char axis, const double v, size_t digits)
 #endif // NDEBUG
 }
 
+// preFlight: Removes any trailing standalone G1-F-only lines from gcode,
+// then appends new_line. A standalone G1 F line is one whose command portion
+// (before any ; comment) starts with G1, contains F, and does NOT contain
+// X, Y, Z, E, I, or J parameters. Blank lines and comment-only lines are
+// skipped over (left in place) during the backward scan.
+void inject_feedrate(std::string &gcode, const std::string &new_line)
+{
+    size_t end = gcode.size();
+
+    while (end > 0)
+    {
+        // First, find the end of actual content by skipping trailing newlines/carriage returns.
+        // This avoids an infinite loop when 'end' sits right after a trailing '\n' (the
+        // zero-length "line" after the last newline would otherwise be classified as blank
+        // and set end = line_start == end, never making progress).
+        size_t content_end = end;
+        while (content_end > 0 && (gcode[content_end - 1] == '\n' || gcode[content_end - 1] == '\r'))
+            --content_end;
+
+        if (content_end == 0)
+            break; // Only newlines/empty string left
+
+        // Find the start of this line (walk back to previous '\n' or start of string)
+        size_t line_start = content_end;
+        while (line_start > 0 && gcode[line_start - 1] != '\n')
+            --line_start;
+
+        // Now: gcode[line_start..content_end) is the line content
+        //      gcode[line_start..end) is the full line including trailing newline(s)
+
+        // Find first non-whitespace character in content
+        size_t first_nonws = line_start;
+        while (first_nonws < content_end && (gcode[first_nonws] == ' ' || gcode[first_nonws] == '\t'))
+            ++first_nonws;
+
+        // Blank line (all whitespace): skip over, leave in place
+        if (first_nonws >= content_end)
+        {
+            end = line_start;
+            continue;
+        }
+
+        // Comment-only line (starts with ;): skip over, leave in place
+        if (gcode[first_nonws] == ';')
+        {
+            end = line_start;
+            continue;
+        }
+
+        // Check for G1 at start of command
+        if (first_nonws + 1 >= content_end || gcode[first_nonws] != 'G' || gcode[first_nonws + 1] != '1' ||
+            (first_nonws + 2 < content_end && gcode[first_nonws + 2] != ' ' && gcode[first_nonws + 2] != '\t' &&
+             gcode[first_nonws + 2] != ';'))
+        {
+            break; // Not a G1 line - stop
+        }
+
+        // Find where the command portion ends (before any ; comment)
+        size_t cmd_end = content_end;
+        for (size_t i = first_nonws; i < content_end; ++i)
+        {
+            if (gcode[i] == ';')
+            {
+                cmd_end = i;
+                break;
+            }
+        }
+
+        // Scan command portion for F and movement axis letters
+        bool has_f = false;
+        bool has_movement = false;
+        for (size_t i = first_nonws + 2; i < cmd_end; ++i)
+        {
+            switch (gcode[i])
+            {
+            case 'F':
+                has_f = true;
+                break;
+            case 'X':
+            case 'Y':
+            case 'Z':
+            case 'E':
+            case 'I':
+            case 'J':
+                has_movement = true;
+                break;
+            }
+        }
+
+        if (has_f && !has_movement)
+        {
+            // Standalone G1 F line - delete it including trailing newline(s)
+            gcode.erase(line_start, end - line_start);
+            end = line_start;
+            continue;
+        }
+
+        // Not a standalone G1 F - stop scanning
+        break;
+    }
+
+    gcode += new_line;
+}
+
 } // namespace Slic3r

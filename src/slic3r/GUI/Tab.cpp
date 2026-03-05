@@ -1868,7 +1868,7 @@ void TabPrint::build()
     optgroup = page->new_optgroup_for_sidebar(L("Advanced"));
     optgroup->append_single_option_line("perimeter_generator");
     optgroup->append_single_option_line("seam_position", category_path + "seam-position");
-    optgroup->append_single_option_line("seam_notch", category_path + "seam-notch");
+    optgroup->append_single_option_line("seam_type", category_path + "seam-type");
     optgroup->append_single_option_line("seam_notch_width", category_path + "seam-notch-width");
     optgroup->append_single_option_line("seam_notch_angle", category_path + "seam-notch-angle");
     optgroup->append_single_option_line("seam_gap_distance", category_path + "seam-gap-distance");
@@ -2062,6 +2062,7 @@ void TabPrint::build()
     optgroup->append_single_option_line("first_layer_speed_over_raft");
 
     optgroup = page->new_optgroup_for_sidebar(L("Acceleration control (advanced)"));
+    optgroup->append_single_option_line("default_acceleration");
     optgroup->append_single_option_line("external_perimeter_acceleration");
     optgroup->append_single_option_line("perimeter_acceleration");
     optgroup->append_single_option_line("top_solid_infill_acceleration");
@@ -2073,7 +2074,6 @@ void TabPrint::build()
     optgroup->append_single_option_line("wipe_tower_acceleration");
     optgroup->append_single_option_line("travel_acceleration");
     optgroup->append_single_option_line("travel_short_distance_acceleration");
-    optgroup->append_single_option_line("default_acceleration");
 
     optgroup = page->new_optgroup_for_sidebar(L("Autospeed (advanced)"));
     optgroup->append_single_option_line("max_print_speed", "max-volumetric-speed_127176");
@@ -2241,6 +2241,7 @@ void TabPrint::build()
 
     optgroup = page->new_optgroup_for_sidebar(L("Athena / Arachne perimeter generator"));
     optgroup->append_single_option_line("perimeter_compression");
+    optgroup->append_single_option_line("thin_wall_precision");
     optgroup->append_single_option_line("wall_transition_angle");
     optgroup->append_single_option_line("wall_transition_filter_deviation");
     optgroup->append_single_option_line("wall_transition_length");

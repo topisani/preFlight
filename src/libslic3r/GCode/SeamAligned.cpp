@@ -351,13 +351,26 @@ SeamCandidate get_seam_candidate(const Shells::Shell<> &shell, const Vec2d &star
         shell,
         // preFlight: Use reference_position (stable) instead of previous_position (drifts).
         // Reference only updates when geometry forces a significant move.
-        [&, reference_position{starting_position}](const Perimeter &perimeter, std::size_t slice_index) mutable
+        [&, reference_position{starting_position}, prev_z{0.0}](const Perimeter &perimeter,
+                                                                std::size_t slice_index) mutable
         {
+            // preFlight: Scale blend factor by layer height so the seam tracks equally well
+            // at any layer height. The 0.25 base factor was tuned at 0.1mm reference height.
+            constexpr double base_blend = 0.25;
+            constexpr double reference_layer_height = 0.1;
+            const double current_z = perimeter.slice_z;
+            const double layer_height = (prev_z > 0.0) ? (current_z - prev_z) : reference_layer_height;
+            prev_z = current_z;
+            const double blend_factor = std::clamp(base_blend * (layer_height / reference_layer_height), base_blend,
+                                                   0.9);
+
             // preFlight: Compute enforcer centroid near reference to center seam in painted region
             Vec2d search_target = reference_position;
+            bool has_nearby_enforcers = false;
             if (auto centroid = Impl::get_enforcer_centroid_near(perimeter, reference_position, params.max_detour))
             {
                 search_target = *centroid;
+                has_nearby_enforcers = true;
             }
 
             SeamChoice candidate{Seams::choose_seam_point(perimeter, Impl::Nearest{search_target, params.max_detour})};
@@ -386,21 +399,56 @@ SeamCandidate get_seam_candidate(const Shells::Shell<> &shell, const Vec2d &star
             }
             else
             {
-                // preFlight: Snap-to-reference to prevent drift between layers.
-                // If the candidate is within snap_tolerance, lock to the reference position.
-                // Only update reference when geometry genuinely forces a move.
-                const double drift = (candidate.position - reference_position).norm();
-                if (drift <= params.snap_tolerance)
+                // preFlight: Blend reference toward current centroid to track painted seam angles
+                // while filtering vertex noise. Previous seam position acts as a low-pass filter.
+                // Blend factor scales with layer height so thick layers track faster.
+                if (has_nearby_enforcers && !is_on_edge)
                 {
+                    reference_position = reference_position * (1.0 - blend_factor) + search_target * blend_factor;
                     candidate.position = reference_position;
-                }
-                else
-                {
-                    reference_position = candidate.position;
                 }
             }
             return candidate;
         })};
+    // preFlight: Backward smoothing pass to eliminate convergence lag at shell start.
+    // The forward blend takes several layers to settle from a bad starting position.
+    // Walking backwards from the converged end straightens out the early layers.
+    if (choices.size() > 1)
+    {
+        constexpr double back_base_blend = 0.1;
+        constexpr double back_ref_height = 0.1;
+        Vec2d backward_ref = choices.back().position;
+        for (std::size_t i = choices.size() - 1; i > 0; --i)
+        {
+            const std::size_t idx = i - 1;
+            const Perimeters::Perimeter &perimeter = shell[idx].boundary;
+            if (perimeter.is_degenerate)
+                continue;
+
+            // Scale backward blend by layer height
+            const double layer_h = (idx + 1 < shell.size()) ? (shell[idx + 1].boundary.slice_z - perimeter.slice_z)
+                                                            : back_ref_height;
+            const double back_blend = std::clamp(back_base_blend * (layer_h / back_ref_height), back_base_blend, 0.5);
+
+            const bool is_on_edge = choices[idx].previous_index == choices[idx].next_index &&
+                                    perimeter.angle_types[choices[idx].next_index] != AngleType::smooth;
+
+            bool has_nearby_enforcers =
+                Impl::get_enforcer_centroid_near(perimeter, backward_ref, params.max_detour).has_value();
+
+            if (has_nearby_enforcers && !is_on_edge)
+            {
+                backward_ref = backward_ref * (1.0 - back_blend) + choices[idx].position * back_blend;
+                // Average forward and backward positions
+                choices[idx].position = (choices[idx].position + backward_ref) * 0.5;
+            }
+            else
+            {
+                backward_ref = choices[idx].position;
+            }
+        }
+    }
+
     return {std::move(choices), std::move(choice_visibilities)};
 }
 

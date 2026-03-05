@@ -80,7 +80,6 @@ struct Params
     double max_detour{};
     double jump_visibility_threshold{};
     double continuity_modifier{};
-    double snap_tolerance{}; // preFlight: tolerance for snap-to-reference vertical alignment
 };
 
 std::vector<std::vector<SeamPerimeterChoice>> get_object_seams(Shells::Shells<> &&shells,

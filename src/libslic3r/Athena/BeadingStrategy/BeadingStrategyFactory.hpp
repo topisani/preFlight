@@ -30,7 +30,8 @@ public:
         coord_t ext_to_first_internal_spacing = 0, // 0 = use ext_perimeter_spacing
         coord_t innermost_spacing = 0,             // 0 = use perimeter_spacing
         coord_t actual_bead_count = 0,             // actual shells requested (not theoretical max)
-        int layer_id = -1                          // For debug output (-1 = unknown)
+        int layer_id = -1,                         // For debug output (-1 = unknown)
+        coord_t thin_wall_snap_precision = 10000   // Thin wall width snap grid (nanometers), default 0.01mm
     );
 };
 

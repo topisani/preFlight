@@ -202,6 +202,10 @@ private:
     std::string set_acceleration_internal(Acceleration type, unsigned int acceleration);
 };
 
+// preFlight: Remove trailing standalone G1-F-only lines from gcode, then append new_line.
+// Walks backwards over comments/blanks, deleting any G1 lines that have F but no X/Y/Z/E/I/J.
+void inject_feedrate(std::string &gcode, const std::string &new_line);
+
 class GCodeFormatter
 {
 public:
@@ -298,7 +302,7 @@ public:
         }
     }
 
-    void emit_f(double speed) { this->emit_axis('F', speed, XYZF_EXPORT_DIGITS); }
+    void emit_f(double speed) { this->emit_axis('F', std::round(speed), XYZF_EXPORT_DIGITS); }
 
     void emit_string(const std::string_view s)
     {

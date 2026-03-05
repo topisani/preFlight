@@ -5,6 +5,8 @@
 ///|/
 
 #include "DoubleSliderForGcode.hpp"
+#include "GUI_App.hpp"
+#include "ImGuiWrapper.hpp"
 
 #include <algorithm>
 
@@ -35,6 +37,11 @@ void DSForGcode::Render(const int canvas_width, const int canvas_height, float e
     ImVec2 pos = ImVec2{std::max(scaled_left_margin, 0.2f * canvas_width), canvas_height - scaled_slider_height};
     const float right_margin = 80.0f * m_scale;
     ImVec2 size = ImVec2(canvas_width - 2 * pos.x - right_margin, scaled_slider_height);
+
+    // Use legend font for slider labels (matches G-code legend sidebar)
+    ImFont *legend_font = Slic3r::GUI::wxGetApp().imgui()->get_legend_font();
+    if (legend_font)
+        m_ctrl.set_label_font(legend_font);
 
     m_ctrl.Init(pos, size, m_scale);
     if (m_ctrl.render())

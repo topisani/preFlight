@@ -481,6 +481,8 @@ class _3MF_Importer : public _3MF_Base
 
     // Semantic version of preFlight that generated this 3MF.
     boost::optional<Semver> m_generator_version;
+    // Raw Application metadata string (e.g. "OrcaSlicer-2.3.1", "PrusaSlicer-2.8.0")
+    std::string m_generator_application;
     unsigned int m_fdm_supports_painting_version = 0;
     unsigned int m_seam_painting_version = 0;
     unsigned int m_mm_painting_version = 0;
@@ -519,6 +521,7 @@ public:
                               ConfigSubstitutionContext &config_substitutions, bool check_version);
     unsigned int version() const { return m_version; }
     boost::optional<Semver> generator_version() const { return m_generator_version; }
+    const std::string &generator_application() const { return m_generator_application; }
 
 private:
     void _destroy_xml_parser();
@@ -2482,7 +2485,7 @@ bool _3MF_Importer::_handle_end_metadata()
     else if (m_curr_metadata_name == "Application")
     {
         // Generator application of the 3MF.
-        // SLIC3R_APP_KEY - SLIC3R_VERSION
+        m_generator_application = m_curr_characters;
         if (boost::starts_with(m_curr_characters, "preFlight-"))
             m_generator_version = Semver::parse(m_curr_characters.substr(12));
     }
@@ -4440,9 +4443,9 @@ static void handle_legacy_project_loaded(DynamicPrintConfig &config, const boost
 
 // Project = either it contains our config OR it is stamped as being produced
 // by preFlight (in which case the version is passed out).
-std::pair<bool, std::optional<Semver>> is_project_3mf(const std::string &filename)
+ProjectFileInfo is_project_3mf(const std::string &filename)
 {
-    std::pair<bool, std::optional<Semver>> out = std::make_pair(false, std::nullopt);
+    ProjectFileInfo out;
 
     mz_zip_archive archive;
     mz_zip_zero_struct(&archive);
@@ -4464,7 +4467,7 @@ std::pair<bool, std::optional<Semver>> is_project_3mf(const std::string &filenam
             std::string name(stat.m_filename);
             std::replace(name.begin(), name.end(), '\\', '/');
             if (boost::algorithm::iequals(name, PRINT_CONFIG_FILE))
-                out.first = true;
+                out.has_config = true;
             if (boost::algorithm::iequals(name, MODEL_FILE))
             {
                 if (auto *iter = mz_zip_reader_extract_iter_new(&archive, i, 0))
@@ -4476,14 +4479,22 @@ std::pair<bool, std::optional<Semver>> is_project_3mf(const std::string &filenam
                         bytes_read > 0)
                     {
                         std::string header(buffer);
-                        boost::regex pattern(R"(^\s*<metadata name="Application".*?preFlight-(.*?)</metadata>$)");
-                        boost::sregex_iterator it(header.begin(), header.end(), pattern);
+
+                        // Extract Application metadata value
+                        boost::regex app_pattern(R"(^\s*<metadata name="Application">(.*?)</metadata>$)");
+                        boost::sregex_iterator app_it(header.begin(), header.end(), app_pattern);
                         boost::sregex_iterator end;
-                        if (it != end)
+                        if (app_it != end)
                         {
-                            Semver semver;
-                            semver.parse((*it)[1].str());
-                            out.second = semver;
+                            out.generator_application = (*app_it)[1].str();
+
+                            // Check if it's a preFlight file
+                            if (boost::starts_with(out.generator_application, "preFlight-"))
+                            {
+                                Semver semver;
+                                semver.parse(out.generator_application.substr(12));
+                                out.generator_version = semver;
+                            }
                         }
                     }
                 }
@@ -4494,7 +4505,8 @@ std::pair<bool, std::optional<Semver>> is_project_3mf(const std::string &filenam
 }
 
 bool load_3mf(const char *path, DynamicPrintConfig &config, ConfigSubstitutionContext &config_substitutions,
-              Model *model, bool check_version, boost::optional<Semver> &generator_version)
+              Model *model, bool check_version, boost::optional<Semver> &generator_version,
+              std::string *generator_application)
 {
     if (path == nullptr || model == nullptr)
         return false;
@@ -4506,6 +4518,8 @@ bool load_3mf(const char *path, DynamicPrintConfig &config, ConfigSubstitutionCo
     importer.log_errors();
     handle_legacy_project_loaded(config, importer.generator_version());
     generator_version = importer.generator_version();
+    if (generator_application)
+        *generator_application = importer.generator_application();
 
     return res;
 }
