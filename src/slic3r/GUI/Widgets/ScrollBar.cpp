@@ -45,6 +45,7 @@ wxBEGIN_EVENT_TABLE(ScrollBar, wxPanel) EVT_PAINT(ScrollBar::OnPaint) EVT_LEFT_D
     , m_dragging(false)
     , m_dragStartCoord(0)
     , m_dragStartPos(0)
+    , m_sumWheelRotation(0)
 {
     SetBackgroundStyle(wxBG_STYLE_PAINT);
     int width = GetScaledScrollbarWidth();
@@ -192,14 +193,16 @@ void ScrollBar::OnMouseWheel(wxMouseEvent &event)
         return;
     }
 
-    int rotation = event.GetWheelRotation();
-    int delta = event.GetWheelDelta();
-    int lines = rotation / delta;
-
     // Scroll 3 lines per wheel notch
-    int scrollAmount = lines * 3;
-    SetThumbPosition(m_position - scrollAmount);
-    NotifyScroll(wxEVT_SCROLL_THUMBTRACK);
+    m_sumWheelRotation += event.GetWheelRotation() * 3;
+    int delta = event.GetWheelDelta();
+    int scrollAmount = m_sumWheelRotation / delta;
+
+    if (scrollAmount) {
+        m_sumWheelRotation -= scrollAmount * delta;
+        SetThumbPosition(m_position - scrollAmount);
+        NotifyScroll(wxEVT_SCROLL_THUMBTRACK);
+    }
 }
 
 void ScrollBar::OnSize(wxSizeEvent &event)

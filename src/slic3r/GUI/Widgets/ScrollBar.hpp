@@ -71,6 +71,7 @@ private:
     bool m_dragging;
     int m_dragStartCoord;
     int m_dragStartPos;
+    int m_sumWheelRotation;
 
     // DPI scaling - these are now methods instead of constants
     static int GetScaledMinThumbSize();

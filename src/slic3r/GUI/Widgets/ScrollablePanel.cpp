@@ -6,6 +6,7 @@
 #include "ScrollBar.hpp"
 #include "UIColors.hpp"
 #include "../GUI_App.hpp"
+#include <cstdio>
 #include <wx/dcclient.h>
 #include <algorithm>
 
@@ -25,7 +26,7 @@ wxBEGIN_EVENT_TABLE(ScrollablePanel, wxPanel) EVT_SIZE(ScrollablePanel::OnSize)
 
         ScrollablePanel::ScrollablePanel(wxWindow *parent, wxWindowID id, const wxPoint &pos, const wxSize &size,
                                          long style)
-    : wxPanel(parent, id, pos, size, style), m_scrollPosition(0), m_contentHeight(0)
+    : wxPanel(parent, id, pos, size, style), m_scrollPosition(0), m_contentHeight(0), m_sumWheelRotation(0)
 {
     // Create content panel directly as child - we'll clip manually via repositioning
     m_content = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
@@ -199,10 +200,14 @@ void ScrollablePanel::OnMouseWheel(wxMouseEvent &event)
         return;
     }
 
-    int rotation = event.GetWheelRotation();
-    int delta = event.GetWheelDelta();
+    m_sumWheelRotation += event.GetWheelRotation() * GetScaledScrollAmount();
 
-    // Scroll per wheel notch (scaled for DPI)
-    int scrollAmount = (rotation / delta) * GetScaledScrollAmount();
-    ScrollToPosition(m_scrollPosition - scrollAmount);
+    int delta = event.GetWheelDelta();
+    int scrollAmount = m_sumWheelRotation / delta;
+
+    if (scrollAmount != 0) {
+        // Scroll per wheel notch (scaled for DPI)
+        m_sumWheelRotation -= scrollAmount * delta;
+        ScrollToPosition(m_scrollPosition - scrollAmount);
+    }
 }

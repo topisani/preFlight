@@ -73,6 +73,7 @@ private:
     ScrollBar *m_scrollbar; // Custom scrollbar
     int m_scrollPosition;   // Current scroll position in pixels
     int m_contentHeight;    // Cached content height
+    int m_sumWheelRotation; // Accumulating mouse wheel events
 
     wxDECLARE_EVENT_TABLE();
 };

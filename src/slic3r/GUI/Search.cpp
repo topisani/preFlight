@@ -927,11 +927,15 @@ private:
         if (totalHeight <= visibleHeight)
             return;
 
-        int rotation = event.GetWheelRotation();
+        m_sum_wheel_rotation += event.GetWheelRotation() * RowHeight() * 3;
         int delta = event.GetWheelDelta();
         if (delta == 0)
             return;
-        int scrollAmount = (rotation / delta) * RowHeight() * 3;
+        int scrollAmount = m_sum_wheel_rotation / delta;
+        if (scrollAmount == 0)
+            return;
+
+        m_sum_wheel_rotation -= scrollAmount * delta;
 
         int maxScroll = std::max(0, totalHeight - visibleHeight);
         m_scroll_offset = std::max(0, std::min(m_scroll_offset - scrollAmount, maxScroll));
@@ -990,6 +994,7 @@ private:
     int m_selected{-1};
     int m_hovered{-1};
     int m_scroll_offset{0};
+    int m_sum_wheel_rotation{0};
 
     ScrollBar *m_scrollbar{nullptr};
 };
